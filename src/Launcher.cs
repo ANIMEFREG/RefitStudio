@@ -14,6 +14,16 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
+using System.Reflection;
+
+[assembly: AssemblyTitle("Refit Studio")]
+[assembly: AssemblyDescription("Refit Studio launcher. Makes clothing refits for Cyberpunk 2077 body mods in Blender.")]
+[assembly: AssemblyProduct("Refit Studio")]
+[assembly: AssemblyCompany("Altshuler")]
+[assembly: AssemblyCopyright("Copyright (c) 2026 Altshuler")]
+[assembly: AssemblyVersion("0.3.0.0")]
+[assembly: AssemblyFileVersion("0.3.0.0")]
+[assembly: AssemblyInformationalVersion("0.3.0")]
 
 namespace RefitStudio
 {
