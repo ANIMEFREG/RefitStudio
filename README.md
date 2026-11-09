@@ -29,32 +29,32 @@ Put `RefitStudio.exe` next to the `core` folder and start it. You also need Blen
 - **0.3.0** - this repository.
 - **0.1.0** - the build submitted to Nexus Mods for file verification: https://github.com/ANIMEFREG/refit-studio-nexus-verification
 
-## Changes in 0.3.0
+## Changelog
 
-- Male V. Switch between "Female V" and "Male V" next to "Bodies" in the launcher. Body profiles, clothing list and tattoos follow the switch. Tested with Adonis.
-- Much faster workshop. A mod you opened before opens instantly, items are prepared in the background while you look at the list.
-- Layered parts of clothing (waistbands, belt loops, pockets) no longer poke through each other after auto fit.
+### 0.3.0
 
-## Changes in 0.2.1
+- Male V. Pick Female V or Male V next to Bodies in the launcher
+- Body profiles, the clothing list and tattoos follow the switch
+- The workshop loads a lot faster
+- A mod you opened before opens right away
+- Items get ready in the background while you look at the list
+- Waistbands, belt loops and pockets dont poke through each other after Auto fit anymore
 
-- The item in the Blender workshop now has its UV maps (UV0 and UV1), so you can export it from Blender with UVs. The exported refit files always kept them.
+### 0.2.1
 
-## Changes in 0.2.0
+- The item in the workshop keeps its UV maps, so you can export it from Blender with UVs
 
-New features
-- Export: one "Export…" button with a popup (Item / Whole mod / Tattoos, Vortex or zip).
-- For modders: save just the `.mesh` under your own name.
-- Clothing mod list shows only clothing mods ("Show all mods" to see the rest).
-- Small "+" / "−" buttons add a clothing mod by hand (folder or .archive) or remove it from the list.
+### 0.2.0
 
-Look and comfort
-- Clean mod names in the list (no versions or Vortex suffixes).
-- New workshop: own header, tabs Fit / Sculpt / Export, only the brushes you need (Grab, Smooth, Inflate), tips before sculpting, cyberpunk style.
-- New launcher in the same cyberpunk glass style.
-
-Auto fit
-- No extra gap between cloth and skin.
-- Bodies very different from vanilla (big chest, wide hips) are followed more accurately.
-- Sleeve ends and hems no longer flare out.
-- Fewer spots where cloth goes under the skin.
-- Checked against 170+ refits made by hand by body and clothing authors.
+- One Export button for Item, Whole mod and Tattoos, to Vortex or as a zip
+- Modders can save just the .mesh under their own name
+- The mod list shows only clothing mods
+- Clean mod names in the list
+- Small + and − buttons to add or remove a clothing mod by hand
+- New look for the launcher
+- New look for the workshop with Fit, Sculpt and Export tabs
+- Only the brushes you need in the workshop, Grab, Smooth and Inflate
+- No extra gap between cloth and skin after Auto fit
+- Bodies far from vanilla are followed more closely
+- Sleeve ends and hems dont flare out anymore
+- Cloth goes under the skin in fewer spots
