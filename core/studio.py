@@ -260,7 +260,7 @@ def start_clothing_scan():
     """В фоне узнаём, в каких модах есть одежда (WolvenKit, ~2 с на новый мод; дальше из кэша)."""
     def work():
         try:
-            _flags['data'] = C.clothing_flags(C.scan_mods())
+            _flags['data'] = C.clothing_flags(C.scan_mods(), gender=gender())
         except Exception:
             C.log('clothing scan:\n' + traceback.format_exc())
             _flags['data'] = {}
@@ -281,7 +281,8 @@ def clothing_flags_ready(prog=None):
     fl = _flags['data'] or {}
     if any(m['path'].lower() not in fl for m in state['mods']):
         fl = _flags['data'] = C.clothing_flags(state['mods'],
-                                               (lambda d, n: prog(100 * d / n, f'{d}/{n}')) if prog else None)
+                                               (lambda d, n: prog(100 * d / n, f'{d}/{n}')) if prog else None,
+                                               gender=gender())
     return fl
 
 
@@ -312,6 +313,24 @@ def looks_male(p):
     name = p.rsplit('/', 1)[-1]
     return (name.startswith('m_') or '_m_' in name or 'pma' in p or name.startswith('ma_')
             or '_ma_' in name or '/male' in p or '/m/' in p) and not looks_female(p)
+
+
+def gender():
+    """Пол выбранного тела: 'female' или 'male' (старые профили - женские)."""
+    try:
+        return body().info.get('gender') or 'female'
+    except Exception:
+        return 'female'
+
+
+def looks_mine(p):
+    """Вещь под пол выбранного тела."""
+    return looks_male(p) if gender() == 'male' else looks_female(p)
+
+
+def looks_other(p):
+    """Вещь явно под другой пол - в списке её не показываем."""
+    return (looks_female(p) and not looks_male(p)) if gender() == 'male' else looks_male(p)
 
 
 # Версии одежды под другие тела: авто-подгонка считает, что вещь сделана под обычное тело,
@@ -379,26 +398,73 @@ def mod_work(mod):
     return os.path.join(C.WORK, C.short_id(mod['path']))
 
 
+OPEN_VERSION = '2'   # меняется, если меняется то, что open_mod кладёт в папку мода
+_prep = {'thread': None, 'map': {}}
+
+
+def prepare_meshes(raw, rels):
+    """В фоне переводим все вещи мода в JSON одним запуском WolvenKit: потом выбор вещи - мгновенный.
+    WolvenKit кладёт результат в одну папку без подпапок, а имена у вещей бывают одинаковые
+    (w_base_body.mesh в разных папках), поэтому копируем их под номерами."""
+    pdir = raw + '_prep'
+    names = {rel: f'{k:04d}.mesh' for k, rel in enumerate(rels)}
+    done = os.path.join(pdir, 'done.json')
+    if os.path.isfile(done):
+        try:
+            if json.load(open(done, encoding='utf-8')) == names:
+                _prep.update(thread=None, map={r: os.path.join(pdir, n + '.json') for r, n in names.items()})
+                return
+        except Exception:
+            pass
+
+    def work():
+        try:
+            C.rmtree(pdir)
+            os.makedirs(os.path.join(pdir, 'm'))
+            for rel, n in names.items():
+                shutil.copyfile(C.lp(os.path.join(raw, rel)), os.path.join(pdir, 'm', n))
+            C.wk('convert', 'serialize', os.path.join(pdir, 'm'), '-o', pdir, '-w', '*.mesh')
+            json.dump(names, open(done, 'w', encoding='utf-8'))
+        except Exception:
+            C.log('prepare meshes: ' + traceback.format_exc().splitlines()[-1])
+    _prep['map'] = {r: os.path.join(pdir, n + '.json') for r, n in names.items()}
+    t = threading.Thread(target=work, daemon=True)
+    _prep['thread'] = t
+    t.start()
+
+
 def open_mod(mod, prog=None):
-    """Распаковывает модели мода и составляет список вещей."""
+    """Распаковывает модели мода и составляет список вещей. Мод, который уже открывали и который
+    с тех пор не менялся, повторно не распаковывается."""
     w = mod_work(mod)
     raw = os.path.join(w, 'raw')
-    for d in (raw, raw + '_json'):
-        C.rmtree(d)
-    os.makedirs(raw)
-    for n, a in enumerate(mod['archives']):
+    keyf = os.path.join(w, 'open.key')
+    key = OPEN_VERSION + '|' + C._mod_key(mod)
+    fresh = os.path.isdir(raw) and os.path.isfile(keyf) and open(keyf, encoding='utf-8').read() == key
+    if not fresh:
+        for d in (raw, raw + '_json', raw + '_prep'):
+            C.rmtree(d)
+        os.makedirs(raw)
         if prog:
-            prog(10 + 60 * n / len(mod['archives']), tr('распаковка ', 'unpacking ') + os.path.basename(a))
-        C.wk('unbundle', a, '-o', raw, '-r', r'\.(mesh|ent|app)$')
-    # .ent/.app хранят пути сжатыми: переводим в JSON, чтобы найти шаблоны вида {gender}_{body}.mesh
-    if prog:
-        prog(75, tr('чтение .ent/.app', 'reading .ent/.app'))
-    try:
+            prog(20, tr('распаковка', 'unpacking'))
+        C.wk('unbundle', *mod['archives'], '-o', raw, '-r', r'\.(mesh|ent|app)$')
+        # .ent/.app хранят пути сжатыми: переводим в JSON, чтобы найти шаблоны вида {gender}_{body}.mesh
+        if prog:
+            prog(70, tr('чтение .ent/.app', 'reading .ent/.app'))
         os.makedirs(raw + '_json', exist_ok=True)
-        for pat in ('*.ent', '*.app'):
-            C.wk('convert', 'serialize', raw, '-o', raw + '_json', '-w', pat)
-    except Exception:
-        pass
+
+        def ser(pat):
+            try:
+                C.wk('convert', 'serialize', raw, '-o', raw + '_json', '-w', pat)
+            except Exception:
+                pass
+        ts = [threading.Thread(target=ser, args=(p,)) for p in ('*.ent', '*.app')]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        with open(keyf, 'w', encoding='utf-8') as f:
+            f.write(key)
     meshes = []
     for dp, _, fs in os.walk(raw):
         for f in fs:
@@ -407,11 +473,12 @@ def open_mod(mod, prog=None):
             if f.lower().endswith('.mesh') and os.path.getsize(full) > 16384 \
                     and '\\materials\\' not in full.lower():
                 rel = os.path.relpath(full, raw)
-                if not looks_male(rel):
+                if not looks_other(rel):
                     meshes.append(rel)
-    meshes.sort(key=lambda m: (not looks_female(m), body_kind(m) != 'base', body_kind(m) == 'other', m.lower()))
+    meshes.sort(key=lambda m: (not looks_mine(m), body_kind(m) != 'base', body_kind(m) == 'other', m.lower()))
     state.update(mod=mod, raw=raw, meshes=meshes)
     json.dump({'mod': mod}, open(os.path.join(w, 'mod.json'), 'w', encoding='utf-8'), ensure_ascii=False)
+    prepare_meshes(raw, meshes)
 
 
 class REFIT_OT_add_mod(bpy.types.Operator):
@@ -588,7 +655,23 @@ class REFIT_OT_choose_mesh(bpy.types.Operator):
         os.makedirs(edit)
         dst = os.path.join(edit, 'item.mesh')
         shutil.copyfile(C.lp(os.path.join(state['raw'], rel)), dst)
-        jpath = C.serialize(dst, edit)
+        jpath = None
+        pj = _prep['map'].get(rel)
+        if pj:
+            t = _prep['thread']
+            if t is not None and t.is_alive():
+                prog = Progress(tr('Вещь', 'Item'))
+                try:
+                    while t.is_alive():
+                        prog(50, tr('готовлю вещи мода (один раз)', 'preparing the mod items (once)'))
+                        t.join(0.2)
+                finally:
+                    prog.done()
+            if os.path.isfile(pj):
+                jpath = dst + '.json'
+                shutil.copyfile(pj, jpath)
+        if jpath is None:
+            jpath = C.serialize(dst, edit)
         if not has_geometry(jpath):
             report(self, os.path.basename(rel) + tr(' - это файл материалов без 3D-модели. Выбери другую вещь.',
                                                     ' is a materials file without a 3D model. Choose another item.'),
@@ -1060,15 +1143,15 @@ def author_has_version(raw, rel):
 
 
 def make_mod(context, prog):
-    """Авто-подгонка всех женских вещей мода под обычное тело (★) -> один zip."""
+    """Авто-подгонка всех вещей мода (под пол тела) под обычное тело (★) -> один zip."""
     if not state['mod']:
         raise UserError(tr('Сначала выбери мод одежды', 'Choose a clothing mod first'))
-    picks = [m for m in state['meshes'] if body_kind(m) == 'base' and looks_female(m)]
+    picks = [m for m in state['meshes'] if body_kind(m) == 'base' and looks_mine(m)]
     if not picks:
-        picks = [m for m in state['meshes'] if looks_female(m) and body_kind(m) not in ('other', 'this')]
+        picks = [m for m in state['meshes'] if looks_mine(m) and body_kind(m) not in ('other', 'this')]
     if not picks:
-        raise UserError(tr('Не нашёл в моде женских вещей под обычное тело. Выбери вещь вручную.',
-                           'No female items for the vanilla body found in this mod. Choose an item manually.'))
+        raise UserError(tr('Не нашёл в моде вещей под обычное тело для этого пола. Выбери вещь вручную.',
+                           'No items for the vanilla body of this gender found in this mod. Choose an item manually.'))
     # вещи, которые автор уже сделал под это тело, не трогаем: его ручная работа лучше авто-подгонки
     own = [m for m in picks if author_has_version(state['raw'], m)]
     picks = [m for m in picks if m not in own]
@@ -1104,7 +1187,7 @@ def make_tattoos(context, prog):
     if not keys:
         raise UserError(tr('У этого тела уже есть свои татуировки, рефит не нужен.',
                            'This body already has its own tattoos, no refit needed.'))
-    src = C.vanilla_jsons()  # пересоздаются, если сменилась версия WolvenKit
+    src = C.vanilla_jsons(gender=gender())  # пересоздаются, если сменилась версия WolvenKit
     tdir = os.path.join(C.WORK, 'tattoo')
     C.rmtree(tdir)
     os.makedirs(tdir)
@@ -1115,7 +1198,7 @@ def make_tattoos(context, prog):
         shutil.copyfile(src[k], jpath)
         m = MeshPos(jpath)
         res = [fit.autofit(m.read(ci), b) for ci in range(len(m.chunks))]
-        items.append((C.TATTOO_FILES[k], jpath, res))
+        items.append((C.tattoo_files(gender())[k], jpath, res))
         lod0[k] = np.concatenate([res[ci] for ci in range(len(m.chunks)) if m.lod_mask(ci) & 1])
     path = build_zip(None, None, items, f'{C.clean_mod_name(body_label())} refit - Body Tattoos', prog,
                      dynamic=False)

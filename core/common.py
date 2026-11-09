@@ -51,13 +51,28 @@ def work_dir(tag):
 OUR_PREFIXES = ('#refit_', '#slim_thin_refit_')  # архивы, которые сделали мы сами
 
 PFA = 'base\\characters\\common\\player_base_bodies\\player_female_average\\'
-BODY_FILES = {
-    'torso': PFA + 't0_000_pwa_base__full.mesh',
-    'arm_l': PFA + 'arms_hq\\a0_000_pwa_base_hq__l.mesh',
-    'arm_r': PFA + 'arms_hq\\a0_000_pwa_base_hq__r.mesh',
-    'feet': PFA + 'l0_000_pwa_base__cs_flat.mesh',
-}
-TATTOO_FILES = {f'tattoo_0{i}': PFA + f'tattoos\\tx_000_pwa_base__full_tattoo_0{i}.mesh' for i in range(1, 6)}
+PMA = 'base\\characters\\common\\player_base_bodies\\player_man_average\\'
+GENDERS = ('female', 'male')
+
+
+def body_files(gender='female'):
+    """Файлы обычного тела V в игре: женское (pwa) или мужское (pma), устроены одинаково."""
+    d, t = (PMA, 'pma') if gender == 'male' else (PFA, 'pwa')
+    files = {'torso': d + f't0_000_{t}_base__full.mesh',
+             'arm_l': d + f'arms_hq\\a0_000_{t}_base_hq__l.mesh',
+             'arm_r': d + f'arms_hq\\a0_000_{t}_base_hq__r.mesh'}
+    if gender != 'male':  # у мужского V ступни входят в модель тела, отдельной нет
+        files['feet'] = d + f'l0_000_{t}_base__cs_flat.mesh'
+    return files
+
+
+def tattoo_files(gender='female'):
+    d, t = (PMA, 'pma') if gender == 'male' else (PFA, 'pwa')
+    return {f'tattoo_0{i}': d + f'tattoos\\tx_000_{t}_base__full_tattoo_0{i}.mesh' for i in range(1, 6)}
+
+
+BODY_FILES = body_files('female')
+TATTOO_FILES = tattoo_files('female')
 PART_NAMES = {'torso': tr('Тело и ноги', 'Torso and legs'), 'arm_l': tr('Левая рука', 'Left arm'),
               'arm_r': tr('Правая рука', 'Right arm'), 'feet': tr('Ступни', 'Feet')}
 
@@ -217,13 +232,15 @@ def to_json(files, out_dir):
     return res
 
 
-def vanilla_jsons(progress=None):
+def vanilla_jsons(progress=None, gender='female'):
     """JSON моделей обычного тела и татуировок из игры. Исходные .mesh храним в кэше, а JSON
     пересоздаём, если сменилась версия WolvenKit: JSON одной версии другая читать не обязана."""
     import shutil
-    allf = {**BODY_FILES, **TATTOO_FILES}
-    raw = os.path.join(CACHE, 'vanilla_mesh')
-    jdir = os.path.join(CACHE, 'vanilla_json')
+    bf = body_files(gender)
+    allf = {**bf, **tattoo_files(gender)}
+    sfx = '_male' if gender == 'male' else ''
+    raw = os.path.join(CACHE, 'vanilla_mesh' + sfx)
+    jdir = os.path.join(CACHE, 'vanilla_json' + sfx)
     vfile = os.path.join(jdir, 'wolvenkit_version.txt')
     have = {k: os.path.join(jdir, k + '.mesh.json') for k in allf}
     ver = wk_version()
@@ -237,7 +254,7 @@ def vanilla_jsons(progress=None):
                            'Extracting the vanilla body from the game files (once)...'))
         tmp = work_dir('game')
         files = extract(game_archive_dirs(), tmp, allf)
-        missing = set(BODY_FILES) - set(files)
+        missing = set(bf) - set(files)
         if missing:
             raise RuntimeError(tr('В файлах игры не нашлись модели тела: ', 'Body models not found in the game files: ') +
                                ', '.join(sorted(missing)) +
@@ -422,50 +439,73 @@ def _list_files(mod):
     return [l.strip().lower() for l in r.stdout.splitlines() if l.strip()]
 
 
-def is_clothing(files):
-    """Есть ли в моде женская одежда игрока: модели, которые не волосы/голова/тело/пропсы,
-    и при них пометка женской версии или .app/.ent (вещь подключается к персонажу)."""
-    body = {v.lower() for v in {**BODY_FILES, **TATTOO_FILES}.values()}
+MALE_HINT = re.compile(r'(^|[\\/_.\-])(m|ma|pma|male|masc|mascv|adonis|atlas|gymfiend|aeiou)([\\/_.\-]|$)')
+
+
+def is_clothing(files, gender='female'):
+    """Есть ли в моде одежда игрока нужного пола: модели, которые не волосы/голова/тело/пропсы,
+    и при них пометка версии под этот пол или .app/.ent (вещь подключается к персонажу)."""
+    body = {v.lower() for g in GENDERS for v in {**body_files(g), **tattoo_files(g)}.values()}
     meshes = [f for f in files if f.endswith('.mesh') and f not in body and not NOT_CLOTHING.search(f)]
     if not meshes:
         return False
-    if any(FEMALE_HINT.search(os.path.basename(f)[:-5]) or 'pwa' in f or 'female' in f for f in meshes):
+    fem = [f for f in meshes if FEMALE_HINT.search(os.path.basename(f)[:-5]) or 'pwa' in f or 'female' in f]
+    if gender == 'male':
+        if any(MALE_HINT.search(os.path.basename(f)[:-5]) or 'pma' in f or '\\male' in f for f in meshes):
+            return True
+        # без пометок пола вещь может быть общей, но если все модели женские - это не наше
+        return any(f.endswith(('.app', '.ent')) for f in files) and len(fem) < len(meshes)
+    if fem:
         return True
     return any(f.endswith(('.app', '.ent')) for f in files)
 
 
-def clothing_flags(mods, progress=None, workers=8):
-    """{путь мода: True/False} - есть ли в нём одежда. Новые моды проверяются параллельно."""
+def clothing_flags(mods, progress=None, workers=8, gender="female"):
+    """{путь мода: True/False} - есть ли в нём одежда нужного пола. Новые моды проверяются параллельно.
+    Список файлов мода читается один раз, в кэш пишутся обе пометки (женская и мужская)."""
     from concurrent.futures import ThreadPoolExecutor
     try:
         cache = json.load(open(MOD_LISTS, encoding='utf-8'))
     except Exception:
         cache = {}
-    todo = [m for m in mods if cache.get(m['path'].lower(), {}).get('key') != _mod_key(m)]
+    field = 'clothing_m' if gender == 'male' else 'clothing'
+    todo = [m for m in mods if cache.get(m['path'].lower(), {}).get('key') != _mod_key(m)
+            or 'clothing_m' not in cache.get(m['path'].lower(), {})]
     if todo and os.path.isfile(load_config().get('wolvenkit', '')):
         done = [0]
 
         def one(m):
             try:
-                v = is_clothing(_list_files(m))
+                fs = _list_files(m)
+                v = (is_clothing(fs, 'female'), is_clothing(fs, 'male'))
             except Exception:
-                v = True  # не смогли проверить - лучше показать
+                v = (True, True)  # не смогли проверить - лучше показать
             done[0] += 1
             if progress:
                 progress(done[0], len(todo))
             return m, v
         with ThreadPoolExecutor(workers) as ex:
-            for m, v in ex.map(one, todo):
-                cache[m['path'].lower()] = {'key': _mod_key(m), 'clothing': v}
+            for m, (vf, vm) in ex.map(one, todo):
+                cache[m['path'].lower()] = {'key': _mod_key(m), 'clothing': vf, 'clothing_m': vm}
         os.makedirs(CACHE, exist_ok=True)
         with open(MOD_LISTS, 'w', encoding='utf-8') as f:
             json.dump(cache, f, ensure_ascii=False)
-    return {m['path'].lower(): cache.get(m['path'].lower(), {}).get('clothing', True) for m in mods}
+    return {m['path'].lower(): cache.get(m['path'].lower(), {}).get(field, True) for m in mods}
 
 
-def body_parts_in(mod):
+def body_gender(mod):
+    """'female' / 'male': чьё тело меняет мод (по файлам туловища, рук, ступней); None - ничьё."""
+    best, n = None, 0
+    for g in GENDERS:
+        k = len(body_parts_in(mod, g) & set(body_files(g)))
+        if k > n:
+            best, n = g, k
+    return best
+
+
+def body_parts_in(mod, gender='female'):
     """Какие файлы тела (и татуировок) подменяет мод."""
-    want = {k: fnv1a64(p) for k, p in {**BODY_FILES, **TATTOO_FILES}.items()}
+    want = {k: fnv1a64(p) for k, p in {**body_files(gender), **tattoo_files(gender)}.items()}
     found = set()
     for a in mod['archives']:
         try:

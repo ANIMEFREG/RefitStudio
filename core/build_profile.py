@@ -44,17 +44,19 @@ def find_mod(path):
             'archives': C._archives_in(path), 'xls': C._xls_in(path)}
 
 
-def build(mod_path, name=None):
+def build(mod_path, name=None, gender=None):
     mod = find_mod(mod_path)
     if not mod['archives']:
         raise RuntimeError(C.tr('В этом моде нет файлов .archive.', 'This mod has no .archive files.'))
-    parts = C.body_parts_in(mod)
-    if not parts & set(C.BODY_FILES):
+    gender = gender or C.body_gender(mod) or 'female'
+    bf, tf = C.body_files(gender), C.tattoo_files(gender)
+    parts = C.body_parts_in(mod, gender)
+    if not parts & set(bf):
         raise RuntimeError(C.tr('Это не мод тела: в нём нет моделей тела V (туловище, руки или ступни). '
                                 'Выбери мод, который меняет само тело.',
                                 'This is not a body mod: it has no V body models (torso, arms or feet). '
                                 'Choose a mod that changes the body itself.'))
-    van = C.vanilla_jsons(progress)
+    van = C.vanilla_jsons(progress, gender)
     pid = C.safe(mod['name'], 28) + '_' + C.short_id(mod['path'], 6)
     pdir = C.profile_dir(pid)
     tmp = pdir + '_tmp'
@@ -65,7 +67,7 @@ def build(mod_path, name=None):
     work = C.work_dir('body')
     try:
         progress(25, C.tr('Достаю тело из мода...', 'Extracting the body from the mod...'))
-        want = {k: p for k, p in {**C.BODY_FILES, **C.TATTOO_FILES}.items() if k in parts}
+        want = {k: p for k, p in {**bf, **tf}.items() if k in parts}
         files = C.extract(mod['archives'], os.path.join(work, 'raw'), want)
         missing = [k for k in want if k not in files]
         if missing:
@@ -74,7 +76,7 @@ def build(mod_path, name=None):
                                C.tr('. Подробности в log.txt.', '. Details in log.txt.'))
         progress(45, C.tr('Читаю модели тела...', 'Reading the body models...'))
         body = C.to_json(files, os.path.join(work, 'json'))
-        info = _compare_and_save(mod, name, pid, van, body, tmp)
+        info = _compare_and_save(mod, name, pid, van, body, tmp, gender)
     except Exception:
         C.rmtree(tmp)
         raise
@@ -90,14 +92,14 @@ def build(mod_path, name=None):
     return info
 
 
-def _compare_and_save(mod, name, pid, van, body, tmp):
+def _compare_and_save(mod, name, pid, van, body, tmp, gender='female'):
     out, info_parts, tattoos = {}, {}, {}
-    keys = list(C.BODY_FILES) + list(C.TATTOO_FILES)
+    keys = list(C.body_files(gender)) + [k for k in C.tattoo_files(gender) if k in van]
     for i, k in enumerate(keys):
         progress(55 + 35 * i / len(keys), C.tr('Сравниваю с обычным телом: ', 'Comparing with the vanilla body: ') + C.part_name(k))
         vp, vn, vt = lod0_data(van[k])
         out[k + '_van'], out[k + '_van_n'], out[k + '_van_tris'] = vp, vn, vt
-        if k in C.TATTOO_FILES:
+        if k.startswith('tattoo_'):
             if k in body:
                 out[k + '_body'], out[k + '_body_n'], out[k + '_body_tris'] = lod0_data(body[k])
             tattoos[k] = 'body' if k in body else ''
@@ -116,7 +118,7 @@ def _compare_and_save(mod, name, pid, van, body, tmp):
     progress(92, C.tr('Сохраняю профиль...', 'Saving the profile...'))
     np.savez_compressed(os.path.join(tmp, 'body.npz'), **out)
     info = {'id': pid, 'name': name or mod['name'], 'mod_name': mod['name'], 'mod_path': mod['path'],
-            'tag': C.body_tag(mod), 'parts': info_parts, 'tattoos': tattoos,
+            'tag': C.body_tag(mod), 'parts': info_parts, 'tattoos': tattoos, 'gender': gender,
             'created': datetime.datetime.now().isoformat(timespec='seconds'), 'version': 2}
     with open(os.path.join(tmp, 'profile.json'), 'w', encoding='utf-8') as f:
         json.dump(info, f, ensure_ascii=False, indent=2)
@@ -127,7 +129,7 @@ def main():
     argv = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else []
     args = dict(zip(argv[::2], argv[1::2]))
     try:
-        info = build(args['--mod'], args.get('--name'))
+        info = build(args['--mod'], args.get('--name'), args.get('--gender'))
         C.log(f'profile {info["id"]}: {info["parts"]} tag={info["tag"]}')
         print('@@OK ' + info['id'], flush=True)
     except Exception as e:

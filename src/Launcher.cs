@@ -1,4 +1,4 @@
-// Refit Studio - лаунчер. Собирается встроенным в Windows компилятором (.NET Framework 4), см. build.bat.
+﻿// Refit Studio - лаунчер. Собирается встроенным в Windows компилятором (.NET Framework 4), см. build.bat.
 // 1) находит Blender, WolvenKit CLI, игру и папки с модами; 2) шаг 1 - тело (профиль из мода тела);
 // 3) шаг 2 - открывает мастерскую в Blender с выбранным телом.
 using System;
@@ -272,6 +272,13 @@ namespace RefitStudio
             { PartBody, PFA + "t0_000_pwa_base__full.mesh" },
             { T("руки", "arms"), PFA + @"arms_hq\a0_000_pwa_base_hq__l.mesh" },
             { T("ступни", "feet"), PFA + "l0_000_pwa_base__cs_flat.mesh" } };
+        // мужской V: те же файлы в player_man_average с pma; ступни входят в модель тела
+        public const string PMA = @"base\characters\common\player_base_bodies\player_man_average\";
+        public static readonly Dictionary<string, string> BodyFilesMale = new Dictionary<string, string> {
+            { PartBody, PMA + "t0_000_pma_base__full.mesh" },
+            { T("руки", "arms"), PMA + @"arms_hq\a0_000_pma_base_hq__l.mesh" } };
+        public static Dictionary<string, string> BodyFilesFor(string gender) { return gender == "male" ? BodyFilesMale : BodyFiles; }
+        public static string Gender(Dictionary<string, object> c) { return Str(c, "gender") == "male" ? "male" : "female"; }
 
         public static ulong Fnv(string s)
         {
@@ -347,9 +354,9 @@ namespace RefitStudio
             return res;
         }
 
-        public void Detect()
+        public void Detect(string gender = "female")
         {
-            var want = App.BodyFiles.ToDictionary(k => k.Key, k => App.Fnv(k.Value));
+            var want = App.BodyFilesFor(gender).ToDictionary(k => k.Key, k => App.Fnv(k.Value));
             foreach (var a in Archives)
             {
                 try
@@ -671,7 +678,7 @@ namespace RefitStudio
         Panel main, setup;
         BodyList bodies;
         Label bodyLabel, status, studioHint;
-        Button openStudio, renameBtn, deleteBtn;
+        Button openStudio, renameBtn, deleteBtn, femBtn, maleBtn;
         // настройки
         Label blStatus, wkStatus, gmStatus;
         TextBox blPath, wkPath, gmPath, outPath;
@@ -754,8 +761,12 @@ namespace RefitStudio
             main = new GlowPanel { Left = 0, Top = App.S(76), Width = ClientSize.Width, Height = App.S(470), BackColor = App.Bg };
             Controls.Add(main);
             // раздел «Тела» с бирюзовым подчёркиванием, как вкладка
-            var tab = UI.Label(main, App.T("Тела", "Bodies"), 28, 0, 200, 26, 10.5f, App.Text, FontStyle.Bold);
+            var tab = UI.Label(main, App.T("Тела", "Bodies"), 28, 0, 70, 26, 10.5f, App.Text, FontStyle.Bold);
             main.Controls.Add(new Panel { Left = App.S(28), Top = App.S(28), Width = Math.Max(App.S(40), tab.PreferredWidth), Height = App.S(2), BackColor = App.Sel });
+            // переключатель пола: список тел, «Добавить тело» и мастерская работают с выбранным
+            femBtn = UI.Glass(main, App.T("Женский V", "Female V"), 110, 0, 100, 26, (s, e) => SetGender("female"));
+            maleBtn = UI.Glass(main, App.T("Мужской V", "Male V"), 214, 0, 100, 26, (s, e) => SetGender("male"));
+            PaintGender();
             main.Controls.Add(new Panel { Left = App.S(28), Top = App.S(30), Width = App.S(764), Height = 1, BackColor = App.Line });
             // действия с телами - маленькими стеклянными кнопками справа от «Тела»
             UI.Glass(main, App.T("+ Добавить тело", "+ Add body"), 462, 0, 130, 26, (s, e) => AddBody());
@@ -779,15 +790,46 @@ namespace RefitStudio
 
         List<Dictionary<string, object>> profiles = new List<Dictionary<string, object>>();
 
+        void SetGender(string g)
+        {
+            if (App.Gender(cfg) == g) return;
+            cfg["gender"] = g; App.SaveConfig(cfg);
+            PaintGender();
+            RefreshBodies();
+            status.Text = g == "male" ? App.T("Мужской V: тела и одежда для мужского V.", "Male V: bodies and clothing for male V.")
+                                      : App.T("Женский V: тела и одежда для женского V.", "Female V: bodies and clothing for female V.");
+        }
+
+        // выбранный пол - сплошная бирюзовая «таблетка», как выбранная вкладка в мастерской
+        void PaintGender()
+        {
+            string g = App.Gender(cfg);
+            foreach (var b in new[] { femBtn, maleBtn })
+            {
+                bool on = (b == maleBtn) == (g == "male");
+                b.BackColor = on ? App.Sel : Color.FromArgb(14, 255, 255, 255);
+                b.ForeColor = on ? App.Bg : App.Text;
+                b.FlatAppearance.MouseOverBackColor = on ? App.Sel : Color.FromArgb(34, 255, 255, 255);
+                b.FlatAppearance.MouseDownBackColor = on ? App.Sel : Color.FromArgb(50, 255, 255, 255);
+                b.Invalidate();
+            }
+        }
+
         void RefreshBodies(string select = null)
         {
             profiles.Clear(); bodies.Clear();
+            string gender = App.Gender(cfg);
             if (Directory.Exists(App.Profiles))
                 foreach (var d in Directory.GetDirectories(App.Profiles).OrderBy(x => x))
                 {
                     string pj = Path.Combine(d, "profile.json");
                     if (!File.Exists(pj) || !File.Exists(Path.Combine(d, "body.npz"))) continue;
-                    try { profiles.Add(App.Json.Deserialize<Dictionary<string, object>>(File.ReadAllText(pj, Encoding.UTF8))); } catch { }
+                    try
+                    {
+                        var p = App.Json.Deserialize<Dictionary<string, object>>(File.ReadAllText(pj, Encoding.UTF8));
+                        if ((App.Str(p, "gender") == "male" ? "male" : "female") == gender) profiles.Add(p);
+                    }
+                    catch { }
                 }
             string cur = select ?? App.Str(cfg, "profile");
             foreach (var p in profiles)
@@ -1080,12 +1122,14 @@ namespace RefitStudio
         public string CreatedId;
         Process proc;
         string manualPath;
+        readonly string gender;
 
         public AddBodyForm(Dictionary<string, object> cfg)
         {
             this.cfg = cfg;
+            gender = App.Gender(cfg);
             UI.Style(this, App.T("Добавить тело", "Add body"), 720, 560);
-            UI.Label(this, App.T("Выбери мод тела", "Choose a body mod"), 22, 16, 400, 26, 11f, App.Text, FontStyle.Bold);
+            UI.Label(this, gender == "male" ? App.T("Выбери мод тела мужского V", "Choose a male V body mod") : App.T("Выбери мод тела женского V", "Choose a female V body mod"), 22, 16, 500, 26, 11f, App.Text, FontStyle.Bold);
             UI.Label(this, App.T("Моды, которые меняют тело V, отмечены звёздочкой и стоят сверху.", "Mods that change V's body are marked with a star and listed first."), 22, 44, 660, 20, 9.5f, App.Dim);
             search = UI.Box(this, 22, 72, 420, false);
             search.TextChanged += (s, e) => Fill();
@@ -1115,7 +1159,7 @@ namespace RefitStudio
             new Thread(() =>
             {
                 var found = Mod.Scan(src);
-                foreach (var m in found) m.Detect();
+                foreach (var m in found) m.Detect(gender);
                 BeginInvoke((Action)(() =>
                 {
                     mods = found;
@@ -1160,7 +1204,7 @@ namespace RefitStudio
                 if (d.ShowDialog(this) != DialogResult.OK) return;
                 manualPath = d.FileName;
                 var m = new Mod { Name = Path.GetFileNameWithoutExtension(d.FileName), Path = d.FileName };
-                m.Archives.Add(d.FileName); m.Detect();
+                m.Archives.Add(d.FileName); m.Detect(gender);
                 list.SelectedItems.Clear();
                 nameBox.Text = App.CleanName(m.Name);
                 info.Text = m.IsBody ? App.T("Меняет: ", "Changes: ") + string.Join(", ", m.Parts) : App.T("В этом архиве нет моделей тела.", "This archive has no body models.");
@@ -1176,7 +1220,7 @@ namespace RefitStudio
             string blender = App.Str(cfg, "blender"), script = Path.Combine(App.Core, "build_profile.py");
             create.Enabled = manual.Enabled = false; // таблицу не блокируем: заблокированная рисуется белой
             bar.Visible = true; bar.Value = 0; prog.ForeColor = App.Dim; prog.Text = App.T("Запускаю...", "Starting...");
-            var psi = new ProcessStartInfo(blender, "-b --factory-startup --python \"" + script + "\" -- --mod \"" + path.TrimEnd('\\') + "\" --name \"" + nameBox.Text.Replace("\"", "'") + "\"")
+            var psi = new ProcessStartInfo(blender, "-b --factory-startup --python \"" + script + "\" -- --mod \"" + path.TrimEnd('\\') + "\" --name \"" + nameBox.Text.Replace("\"", "'") + "\" --gender " + gender)
             { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true,
               StandardOutputEncoding = Encoding.UTF8, WorkingDirectory = App.Core };
             string error = null, ok = null;

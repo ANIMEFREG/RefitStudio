@@ -1,6 +1,6 @@
-﻿# Refit Studio
+# Refit Studio
 
-Auto refit clothing for any female V body mod in Cyberpunk 2077.
+Auto refit clothing for any V body mod in Cyberpunk 2077, female or male.
 Nexus Mods page: https://www.nexusmods.com/cyberpunk2077/mods/37166
 
 ## What is in this repository
@@ -26,8 +26,14 @@ Put `RefitStudio.exe` next to the `core` folder and start it. You also need Blen
 
 ## Versions
 
-- **0.2.1** - this repository.
+- **0.3.0** - this repository.
 - **0.1.0** - the build submitted to Nexus Mods for file verification: https://github.com/ANIMEFREG/refit-studio-nexus-verification
+
+## Changes in 0.3.0
+
+- Male V. Switch between "Female V" and "Male V" next to "Bodies" in the launcher. Body profiles, clothing list and tattoos follow the switch. Tested with Adonis.
+- Much faster workshop. A mod you opened before opens instantly, items are prepared in the background while you look at the list.
+- Layered parts of clothing (waistbands, belt loops, pockets) no longer poke through each other after auto fit.
 
 ## Changes in 0.2.1
 

@@ -441,6 +441,25 @@ MIN_GAP = 0.001       # м: ближе к коже ткань не подпус�
 FEATHER = 0.002       # м: насколько подъём ткани может "расплыться" на соседние точки
 
 
+LAYER_LOCK = True     # слои одежды (пояс поверх ткани, шлёвки, карманы) двигаются вместе
+LAYER_SIGMA = 0.003   # м: точки ближе этого у автора получают почти одинаковый сдвиг
+LAYER_PASSES = 2
+LAYER_K = 24
+
+
+def layer_lock(X, X0):
+    """Сглаживает сдвиг по пространству, а не по сетке: отдельные куски ткани, лежащие у автора
+    друг на друге в паре миллиметров, иначе сдвигаются по-разному и протыкают друг друга
+    (торчащие края пояса и шлёвок). Мелкие различия в пределах 3 мм, форма не меняется."""
+    idx, d2 = Index(X0).query(X0, LAYER_K)
+    w = np.exp(-d2 / (2 * LAYER_SIGMA ** 2))
+    w /= w.sum(1, keepdims=True)
+    D = X - X0
+    for _ in range(LAYER_PASSES):
+        D = (D[idx] * w[..., None]).sum(1)
+    return X0 + D
+
+
 def settle(current, original, body, tris, iters=SETTLE_ITERS, shells=()):
     """Натяжение ткани после подгонки. Ткань стремится сохранить форму автора (свои складки и
     плавность), но не может уйти под кожу. Так под грудью ткань натягивается мостиком, а не
@@ -587,6 +606,8 @@ def settle(current, original, body, tris, iters=SETTLE_ITERS, shells=()):
             X[fold_act] = Xs[fold_act] + D[fold_act]
         if it % 3 == 2 or it == iters - 1:
             X = push(X)
+    if LAYER_LOCK:
+        X = push(layer_lock(X, X0))
     for _ in range(3):
         X, k = collide_faces(X, SKIN)
         if SHELLS:
