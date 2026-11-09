@@ -26,13 +26,25 @@ Put `RefitStudio.exe` next to the `core` folder and start it. You also need Blen
 
 ## Versions
 
-- **0.1.1** - this repository.
+- **0.2.0** - this repository.
 - **0.1.0** - the build submitted to Nexus Mods for file verification: https://github.com/ANIMEFREG/refit-studio-nexus-verification
 
-## Changes in 0.1.1
+## Changes in 0.2.0
 
-- Export: one "Export…" button with a popup (Item / Whole mod / Tattoos, Vortex or zip). For modders: save just the `.mesh` under your own name.
-- Clothing mod list shows clean mod names and only clothing mods ("Show all mods" to see the rest). Small "+" / "−" buttons add or remove a mod by hand.
-- New workshop look: own header, tabs Fit / Sculpt / Export, only the three brushes you need (Grab, Smooth, Inflate), tips before sculpting.
-- New launcher look (cyberpunk style).
-- Better auto fit: no extra gap between cloth and skin; strong body changes (big chest, wide hips) are followed more smoothly. Checked against 170+ refits made by hand by the body/clothing authors.
+New features
+- Export: one "Export…" button with a popup (Item / Whole mod / Tattoos, Vortex or zip).
+- For modders: save just the `.mesh` under your own name.
+- Clothing mod list shows only clothing mods ("Show all mods" to see the rest).
+- Small "+" / "−" buttons add a clothing mod by hand (folder or .archive) or remove it from the list.
+
+Look and comfort
+- Clean mod names in the list (no versions or Vortex suffixes).
+- New workshop: own header, tabs Fit / Sculpt / Export, only the brushes you need (Grab, Smooth, Inflate), tips before sculpting, cyberpunk style.
+- New launcher in the same cyberpunk glass style.
+
+Auto fit
+- No extra gap between cloth and skin.
+- Bodies very different from vanilla (big chest, wide hips) are followed more accurately.
+- Sleeve ends and hems no longer flare out.
+- Fewer spots where cloth goes under the skin.
+- Checked against 170+ refits made by hand by body and clothing authors.

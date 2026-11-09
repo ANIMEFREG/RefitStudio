@@ -434,6 +434,9 @@ def conform(current, original, body, near=0.03, far=0.06):
 
 
 SETTLE_ITERS = 12     # проходов натяжения ткани
+SETTLE_PIN_FOLDS = True  # резкие сгибы ткани (подгибы рукавов/подола) натяжение не сглаживает
+SETTLE_FOLD = 0.3        # сгиб: смещение точки от среднего соседей больше этой доли длины ребра
+SETTLE_FOLD_RING = 1     # сколько колец соседей вокруг сгиба тоже не сглаживать
 MIN_GAP = 0.001       # м: ближе к коже ткань не подпускаем
 FEATHER = 0.002       # м: насколько подъём ткани может "расплыться" на соседние точки
 
@@ -471,6 +474,20 @@ def settle(current, original, body, tris, iters=SETTLE_ITERS, shells=()):
     L0 = avg(X0) - X0
     g, _ = body.surf_gap(X, 0.04)
     act = np.isfinite(g).astype(np.float64)[:, None]  # свободные части (далеко от тела) не трогаем
+    if SETTLE_PIN_FOLDS:
+        # резкие сгибы ткани у автора (подгиб рукава и подола, кромки, швы) сглаживание не трогает:
+        # на сгибе 180 градусов оно "раскрывает" край, и рукав/подол оттопыривается на 5-12 мм.
+        # Такие точки не меняют форму сгиба, а сдвигаются так же, как соседняя ткань (без ряби).
+        el = np.linalg.norm(X0[E[:, 0]] - X0[E[:, 1]], axis=1)
+        sl = np.zeros(m); np.add.at(sl, E[:, 0], el); np.add.at(sl, E[:, 1], el)
+        mean_e = sl / np.maximum(deg, 1)
+        fold = np.linalg.norm(L0, axis=1) > SETTLE_FOLD * np.maximum(mean_e, 1e-6)
+        for _ in range(SETTLE_FOLD_RING):  # и соседние точки, чтобы сгиб не "ломался" на границе
+            f2 = fold.copy(); f2[E[fold[E[:, 0]], 1]] = True; f2[E[fold[E[:, 1]], 0]] = True; fold = f2
+        fold_act = fold & (act[:, 0] > 0)
+        act[fold] = 0.0
+    else:
+        fold_act = None
 
     # препятствия: (зазор на новом теле, зазор у автора на обычном теле, дальность)
     obstacles = [(body.surf_gap, body.van_gap, 0.03)]
@@ -562,8 +579,12 @@ def settle(current, original, body, tris, iters=SETTLE_ITERS, shells=()):
         return feathered(lambda Z: collide(Z, SHELLS), Y) if SHELLS else Y
 
     X = push(X)
+    Xs = X.copy()
     for it in range(iters):
         X = X + 0.5 * ((avg(X) - L0) - X) * act
+        if fold_act is not None and fold_act.any():
+            D = avg(X - Xs)
+            X[fold_act] = Xs[fold_act] + D[fold_act]
         if it % 3 == 2 or it == iters - 1:
             X = push(X)
     for _ in range(3):
