@@ -26,8 +26,12 @@ Put `RefitStudio.exe` next to the `core` folder and start it. You also need Blen
 
 ## Versions
 
-- **0.2.0** - this repository.
+- **0.2.1** - this repository.
 - **0.1.0** - the build submitted to Nexus Mods for file verification: https://github.com/ANIMEFREG/refit-studio-nexus-verification
+
+## Changes in 0.2.1
+
+- The item in the Blender workshop now has its UV maps (UV0 and UV1), so you can export it from Blender with UVs. The exported refit files always kept them.
 
 ## Changes in 0.2.0
 

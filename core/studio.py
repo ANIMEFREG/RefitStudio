@@ -522,6 +522,31 @@ class REFIT_OT_choose_mod(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def add_uv_maps(ob, json_path):
+    """UV-развёртки автора (UV0, UV1) на объект вещи: чтобы вещь можно было вытащить из Blender
+    с текстурными координатами (мододелы экспортируют её сами)."""
+    try:
+        m = MeshPos(json_path)
+        cis = [ci for ci in range(len(m.chunks)) if m.lod_mask(ci) & 1]
+        me = ob.data
+        vi = np.zeros(len(me.loops), np.int32)
+        me.loops.foreach_get('vertex_index', vi)
+        for k in (0, 1):
+            parts = [m.read_uv(ci, k) for ci in cis]
+            if any(u is None for u in parts):
+                continue
+            uv = np.concatenate(parts)
+            if len(uv) != len(me.vertices):
+                continue
+            uv = np.stack([uv[:, 0], 1.0 - uv[:, 1]], 1)  # в игре V идёт вниз, в Blender вверх
+            layer = me.uv_layers.new(name=f'UV{k}')
+            layer.data.foreach_set('uv', uv[vi].astype(np.float32).ravel())
+        if me.uv_layers:
+            me.uv_layers.active_index = 0
+    except Exception:
+        C.log('UV maps: ' + traceback.format_exc().splitlines()[-1])
+
+
 def load_item(context, rel, json_path, orig=None):
     """Создаёт объект одежды из JSON меша. orig - исходные позиции (если вещь из сохранения)."""
     pos, tris, ranges = MeshPos(json_path).lod0()
@@ -529,6 +554,7 @@ def load_item(context, rel, json_path, orig=None):
     if old:
         bpy.data.objects.remove(old, do_unlink=True)
     ob = build_object(CLOTH, pos, tris, context.scene.collection, CLOTH_COLOR)
+    add_uv_maps(ob, json_path)
     state.update(mesh=rel, json=json_path, orig=(orig if orig is not None else pos.copy()), ranges=ranges, base=None,
                  tris=tris)
     context.scene.refit_mesh = rel
@@ -1375,6 +1401,9 @@ def restore_state(_):
     state.update(mod=d['mod'], mesh=d['mesh'], raw=d['raw'], json=d['json'],
                  orig=np.load(d['orig']), ranges=[tuple(r) for r in d['ranges']],
                  base=np.load(base_path) if os.path.exists(base_path) else None)
+    ob = cloth_obj()
+    if ob and not ob.data.uv_layers and d.get('json') and os.path.isfile(d['json']):
+        add_uv_maps(ob, d['json'])  # работы, сохранённые до версии с UV
     if d['raw'] and os.path.isdir(d['raw']):
         state['meshes'] = sorted(os.path.relpath(os.path.join(dp, f), d['raw'])
                                  for dp, _, fs in os.walk(d['raw']) for f in fs if f.lower().endswith('.mesh'))
