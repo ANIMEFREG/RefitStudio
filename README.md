@@ -3,6 +3,18 @@
 Auto refit clothing for any V body mod in Cyberpunk 2077, female or male.
 Nexus Mods page: https://www.nexusmods.com/cyberpunk2077/mods/37166
 
+## Download
+
+### [⬇ Download Refit Studio (latest version)](https://github.com/ANIMEFREG/RefitStudio/releases/latest/download/RefitStudio.zip)
+
+1. Unpack the zip anywhere (a short path like `Documents\RefitStudio` is best)
+2. Run `RefitStudio.exe`
+3. If Windows says "Windows protected your PC", click **More info** and then **Run anyway**
+
+You also need [Blender 4.2 or newer](https://www.blender.org/download/), the game and ArchiveXL. The launcher downloads WolvenKit CLI for you with one button. Full guide is in `README.txt` inside the zip.
+
+Older versions are on the [Releases](https://github.com/ANIMEFREG/RefitStudio/releases) page.
+
 ## What is in this repository
 
 - `src/` - the launcher (`RefitStudio.exe`), a single C# WinForms file.
@@ -10,7 +22,7 @@ Nexus Mods page: https://www.nexusmods.com/cyberpunk2077/mods/37166
 
 The release archive on Nexus contains exactly these files plus the built `RefitStudio.exe` and readme files.
 
-## Build the launcher
+## Build from source
 
 Requirements: Windows 10 or 11. No extra tools needed - it uses the C# compiler that ships with Windows (.NET Framework 4, `csc.exe`).
 
