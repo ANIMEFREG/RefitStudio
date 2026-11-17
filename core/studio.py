@@ -323,9 +323,34 @@ def gender():
         return 'female'
 
 
+def unmarked(p):
+    """В пути вещи нет пометки пола (daniella_tank_base_body.mesh)."""
+    return not looks_female(p) and not looks_male(p)
+
+
+FEM_NAME = re.compile(r'fem|female|woman|women|girl|\bwa\b|pwa')
+MASC_NAME = re.compile(r'masc|(?<!fe)male|\bmen\b|\bman\b|\bboy|\bpma\b')
+
+
+def mod_gender(rels, name=''):
+    """Пол мода: по пометкам в путях вещей, а если их нет - по названию мода. None - непонятно или оба."""
+    f = any(looks_female(r) for r in rels)
+    m = any(looks_male(r) for r in rels)
+    if f != m:
+        return 'female' if f else 'male'
+    if f and m:
+        return None
+    n = (name or '').lower()
+    f, m = bool(FEM_NAME.search(n)), bool(MASC_NAME.search(n))
+    return ('female' if f else 'male') if f != m else None
+
+
 def looks_mine(p):
-    """Вещь под пол выбранного тела."""
-    return looks_male(p) if gender() == 'male' else looks_female(p)
+    """Вещь под пол выбранного тела. Вещь без пометки пола - наша, если мод не под другой пол."""
+    g = gender()
+    if looks_male(p) if g == 'male' else looks_female(p):
+        return True
+    return unmarked(p) and state.get('mod_gender') in (None, g)
 
 
 def looks_other(p):
@@ -349,17 +374,101 @@ NOISE = {'w', 'm', 'wa', 'ma', 'pwa', 'pma', 'base', 'body', 'vanilla', 'mesh', 
          'l0', 'h0', 'g0', 'b0'}
 
 
+def body_suffixes():
+    """Значения {body}, под которые ArchiveXL ищет модели для нашего тела (snake_case, как в ArchiveXL).
+    Первое - главное. Старые профили без 'tags' дочитывают теги из .xl мода тела."""
+    info = body().info
+    tags = info.get('tags')
+    if tags is None:
+        tags = [info.get('tag') or '']
+        mp = info.get('mod_path') or ''
+        try:
+            if os.path.isdir(mp):
+                xls = [os.path.join(dp, f) for dp, _, fs in os.walk(mp) for f in fs if f.lower().endswith('.xl')]
+                tags += C.body_tags({'xls': xls})
+            elif os.path.isfile(mp + '.xl'):
+                tags += C.body_tags({'xls': [mp + '.xl']})
+        except Exception:
+            pass
+        info['tags'] = tags = [t for t in dict.fromkeys(tags) if t]
+    return list(dict.fromkeys(C.snake_case(t) for t in tags if t))
+
+
 def body_kind(path):
     name = os.path.splitext(os.path.basename(path))[0].lower()
-    tokens = set(re.split(r'[_\-.]+', name))
-    if 'base' in tokens or 'vanilla' in tokens or 'base_body' in name:
+    tokens = set(re.split(r'[_\-.]+', name)) - name_words(path)
+    # модель, названная просто base.mesh (турель в Zenitex Military Store), - не метка тела
+    if name not in ('base', 'vanilla') and ('base' in tokens or 'vanilla' in tokens or 'base_body' in name):
         return 'base'
-    tag = (body().info.get('tag') or '').lower()
-    if tag and tag in name:
+    if any(t in name or t.replace('_', '') in name for t in body_suffixes()):
         return 'this'
     if tokens & set(OTHER_BODIES):
         return 'other'
     return ''
+
+
+# Названия тел, которые бывают и обычными словами в имени вещи: Songbird's Jacket -> ..._collar_songbird_big.mesh
+# (songbird - персонаж, big - часть куртки). Такое слово - часть названия, а не тело, если оно есть во всех
+# моделях мода или если модель надевается вместе (одна .ent / один облик .app) с моделью без этого слова.
+# Явные метки тел (ebb, vtk, lush...) так не снимаются: у вариантов под тело бывают общие аксессуары.
+WORD_BODIES = {'songbird', 'eve', 'angel', 'solo', 'big', 'small', 'flat', 'valentine', 'atlas', 'freyja', 'elegy'}
+
+
+def _mesh_key(p):
+    return p.replace('/', '\\').replace('\\\\', '\\').lower().strip('\\')
+
+
+def _tokens(p):
+    return set(re.split(r'[_\-.]+', os.path.splitext(os.path.basename(_mesh_key(p)))[0]))
+
+
+def worn_groups(raw):
+    """Наборы моделей, которые надеваются вместе: каждая .ent целиком и каждый облик из .app."""
+    groups = []
+    jdir = (raw or '') + '_json'
+    if not os.path.isdir(jdir):
+        return groups
+    for dp, _, fs in os.walk(jdir):
+        for f in fs:
+            fl = f.lower()
+            if not fl.endswith('.json') or not (fl.endswith('.ent.json') or fl.endswith('.app.json')):
+                continue
+            try:
+                d = json.load(open(os.path.join(dp, f), encoding='utf-8'))
+            except Exception:
+                continue
+            parts = [d]
+            if fl.endswith('.app.json'):
+                apps = (d.get('Data') or {}).get('RootChunk', {}).get('appearances') or []
+                parts = apps or [d]
+            for part in parts:
+                ms = {_mesh_key(m) for m in re.findall(r'"([^"*{}]+\.mesh)"', json.dumps(part))}
+                if len(ms) > 1:
+                    groups.append(ms)
+    return groups
+
+
+def find_name_words(meshes, raw):
+    """{модель: слова-тела, которые в её имени - часть названия вещи}."""
+    keys = {m: _mesh_key(m) for m in meshes}
+    toks = {m: _tokens(m) for m in meshes}
+    everywhere = set.intersection(*toks.values()) if len(meshes) > 1 else set()
+    groups = worn_groups(raw)
+    out = {}
+    for m in meshes:
+        words = set(everywhere & WORD_BODIES)
+        for w in (toks[m] & WORD_BODIES) - words:
+            for g in groups:
+                if keys[m] in g and any(w not in _tokens(o) for o in g if o != keys[m]):
+                    words.add(w)
+                    break
+        if words:
+            out[keys[m]] = words
+    return out
+
+
+def name_words(path):
+    return state.get('name_words', {}).get(_mesh_key(path), set())
 
 
 def friendly(rel):
@@ -367,8 +476,9 @@ def friendly(rel):
     parts = rel.replace('/', '\\').lower().split('\\')
     name = os.path.splitext(parts[-1])[0]
     tokens = [t for t in re.split(r'[_\-.]+', name) if t]
-    bodies = [BODY_NAMES[t] for t in tokens if t in BODY_NAMES]
-    words = [t for t in tokens if t not in NOISE and t not in BODY_NAMES and not re.fullmatch(r'\d{3,}', t)]
+    nw = name_words(rel)  # songbird в Songbird's Jacket - часть названия, а не тело
+    bodies = [BODY_NAMES[t] for t in tokens if t in BODY_NAMES and t not in nw]
+    words = [t for t in tokens if t not in NOISE and (t not in BODY_NAMES or t in nw) and not re.fullmatch(r'\d{3,}', t)]
     folders = [f for f in parts[:-1] if f not in NOISE and not f.endswith('meshes')]
     if words and len(words) > 1 and any(words[0] == f.split('_')[0] for f in folders[:2]):
         words = words[1:]
@@ -475,8 +585,10 @@ def open_mod(mod, prog=None):
                 rel = os.path.relpath(full, raw)
                 if not looks_other(rel):
                     meshes.append(rel)
+    state.update(mod=mod, raw=raw, mod_gender=mod_gender(meshes, mod.get('name', '')),
+                 name_words=find_name_words(meshes, raw))
     meshes.sort(key=lambda m: (not looks_mine(m), body_kind(m) != 'base', body_kind(m) == 'other', m.lower()))
-    state.update(mod=mod, raw=raw, meshes=meshes)
+    state['meshes'] = meshes
     json.dump({'mod': mod}, open(os.path.join(w, 'mod.json'), 'w', encoding='utf-8'), ensure_ascii=False)
     prepare_meshes(raw, meshes)
 
@@ -650,6 +762,19 @@ class REFIT_OT_choose_mesh(bpy.types.Operator):
 
     def execute(self, context):
         rel = state['meshes'][int(self.mesh)]
+        sv = find_save(rel)
+        if sv and save_ready(sv):
+            d, meta = sv
+            ob, pos = load_item(context, rel, os.path.join(d, 'item.mesh.json'), orig=np.load(os.path.join(d, 'orig.npy')))
+            set_pos(ob, np.load(os.path.join(d, 'pos.npy')))
+            bp = os.path.join(d, 'base.npy')
+            state['base'] = np.load(bp) if os.path.isfile(bp) else None
+            report(self, tr(f'{os.path.basename(rel)}: загружено твоё сохранение. «Вернуть оригинал» - начать заново.',
+                            f'{os.path.basename(rel)}: your saved work is loaded. "Reset to original" to start over.'))
+            return {'FINISHED'}
+        if sv and not sv[1]:  # сохранение из старой версии: открываем его целиком
+            bpy.ops.wm.open_mainfile(filepath=os.path.join(sv[0], 'work.blend'))
+            return {'FINISHED'}
         edit = os.path.join(mod_work(state['mod']), 'edit')
         C.rmtree(edit)
         os.makedirs(edit)
@@ -793,6 +918,105 @@ class REFIT_OT_reset(bpy.types.Operator):
             set_color_attr(ob, np.tile(CLOTH_COLOR, (len(state['orig']), 1)))
             report(self, tr('Вещь возвращена к оригиналу автора.', "Item reset to the author's original."))
         return {'FINISHED'}
+
+
+# ---------- мод тела не подключает метку Body:<тег> (рефиты под {body} в игре не видны) ----------
+
+BODYFIX = {'ents': [], 'done': False}
+
+
+def body_mod():
+    """Файлы мода тела из профиля (profile.json читаем сами: функция вызывается и из фонового потока)."""
+    if B['body'] is not None:
+        mp = body().info.get('mod_path') or ''
+    else:
+        pid = arg('--profile') or C.load_config().get('profile')
+        mp = json.load(open(os.path.join(C.profile_dir(pid), 'profile.json'), encoding='utf-8')).get('mod_path') or ''
+    return C.body_mod_files(mp)
+
+
+def check_body_patches():
+    """В фоне при запуске: есть ли у мода тела неподключённая патч-сущность игрока."""
+    def work():
+        try:
+            BODYFIX['ents'] = C.unregistered_body_patches(body_mod())
+            if BODYFIX['ents']:
+                C.log(f'body check: not registered in .xl: {BODYFIX["ents"]}')
+        except Exception:
+            C.log('body check:\n' + traceback.format_exc())
+        BODYFIX['done'] = True
+        try:
+            bpy.app.timers.register(redraw_ui, first_interval=0.1)
+        except Exception:
+            pass
+    threading.Thread(target=work, daemon=True).start()
+
+
+def redraw_ui():
+    for w in bpy.context.window_manager.windows:
+        for a in w.screen.areas:
+            a.tag_redraw()
+    return None
+
+
+BODYFIX_TEXT = (tr(
+    'Мод тела не подключает свою метку тела для ArchiveXL. Игра считает тело ванильным, '
+    'поэтому рефиты под это тело (и наши, и чужие) в игре не видны.\n'
+    'Можно починить: в .xl мода тела допишется одна строка подключения. Копия файла до правки '
+    'сохранится в папке Refit Studio (backups). После этого перезапусти игру.',
+    "The body mod does not register its body tag for ArchiveXL. The game thinks the body is vanilla, "
+    "so refits for this body (ours and other people's) do not show in the game.\n"
+    "This can be fixed: one registration line is added to the body mod's .xl. A copy of the file is saved "
+    "in the Refit Studio folder (backups) first. Restart the game afterwards."))
+
+
+class REFIT_OT_fix_body(bpy.types.Operator):
+    bl_idname = 'refit.fix_body'
+    bl_label = tr('Починить мод тела', 'Fix the body mod')
+    bl_description = tr('Дописать в .xl мода тела подключение метки тела, чтобы рефиты были видны в игре',
+                        "Add the body tag registration to the body mod's .xl so refits show in the game")
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width=520, title=self.bl_label,
+                                                          confirm_text=tr('Починить', 'Fix'))
+
+    def draw(self, context):
+        import textwrap
+        col = self.layout.column(align=True)
+        for i, par in enumerate(BODYFIX_TEXT.split('\n')):
+            if i:
+                col.separator()
+            for line in textwrap.wrap(par, 78):
+                col.label(text=line)
+
+    def execute(self, context):
+        mod = body_mod()
+        ents = C.unregistered_body_patches(mod)
+        if not ents:
+            BODYFIX['ents'] = []
+            report(self, tr('Мод тела уже в порядке.', 'The body mod is already fine.'))
+            return {'FINISHED'}
+        xl, bak = C.fix_body_patches(mod, ents)
+        BODYFIX['ents'] = C.unregistered_body_patches(mod)
+        if BODYFIX['ents']:
+            raise UserError(tr('Не получилось подключить метку тела, подробности в log.txt',
+                               'Could not register the body tag, see log.txt'))
+        report(self, tr(f'Мод тела починен ({os.path.basename(xl)}). Перезапусти игру, рефиты станут видны.',
+                        f'Body mod fixed ({os.path.basename(xl)}). Restart the game and the refits will show.'))
+        return {'FINISHED'}
+
+
+def draw_bodyfix(lay):
+    if not BODYFIX['ents']:
+        return
+    box = lay.box()
+    box.alert = True
+    box.label(text=tr('Рефиты не будут видны в игре', 'Refits will not show in the game'), icon='ERROR')
+    for line in (tr('Мод тела не подключает метку', "The body mod doesn't register"),
+                 tr('тела для ArchiveXL.', 'its body tag for ArchiveXL.')):
+        box.label(text=line)
+    box.operator('refit.fix_body', icon='TOOL_SETTINGS')
+    lay.separator()
 
 
 # ---------- предупреждения перед лепкой (окно посреди экрана, «больше не показывать») ----------
@@ -989,9 +1213,25 @@ class REFIT_OT_check(bpy.types.Operator):
 
 def dynamic_name(raw, rel):
     """Если мод выбирает модель по шаблону с {body}, возвращает путь модели для типа нашего тела."""
-    tag = (body().info.get('tag') or '').lower()
-    if not tag:
-        return None
+    names = dynamic_names(raw, rel)
+    return names[0] if names else None
+
+
+def dynamic_names(raw, rel):
+    """Пути модели под каждое значение {body} нашего тела (главное первым), если мод выбирает модель по шаблону."""
+    sufs = body_suffixes()
+    if not sufs:
+        return []
+    out = []
+    for tag in sufs:
+        n = _dynamic_for(raw, rel, tag)
+        if n is None:
+            return []
+        out.append(n)
+    return list(dict.fromkeys(out))
+
+
+def _dynamic_for(raw, rel, tag):
     rel_l = rel.replace('/', '\\').lower()
     folder, fname = os.path.split(rel_l)
     jdir = raw + '_json'
@@ -1049,11 +1289,13 @@ def bake_mesh(jpath, results, tmp):
     return os.path.join(tmp, 'item.mesh')
 
 
-def build_zip(mod, raw, items, zip_name, prog=None, dynamic=True):
-    """items: [(rel, mesh_json_path, [позиции по всем чанкам])] -> один zip с рефитом."""
+def build_zip(mod, raw, items, zip_name, prog=None, dynamic=True, arch_part=None):
+    """items: [(rel, mesh_json_path, [позиции по всем чанкам])] -> один zip с рефитом.
+    arch_part - своё имя архива (для одной вещи - имя вещи, чтобы рефиты разных вещей не затирали друг друга)."""
     out_dir = os.path.join(mod_work(mod) if mod else os.path.join(C.WORK, 'tattoo'), 'out')
     C.rmtree(out_dir)
-    arch_name = '#REFIT_' + body_short() + '_' + C.safe(C.clean_mod_name(mod['name']) if mod else 'tattoos', 24)
+    arch_name = '#REFIT_' + body_short() + '_' + (
+        C.safe(arch_part, 40) if arch_part else C.safe(C.clean_mod_name(mod['name']) if mod else 'tattoos', 24))
     pack_root = os.path.join(out_dir, 'p', arch_name)
     xl = {}
     for n, (rel, jpath, results) in enumerate(items):
@@ -1062,11 +1304,14 @@ def build_zip(mod, raw, items, zip_name, prog=None, dynamic=True):
         tmp = os.path.join(out_dir, f'i{n}')
         bake_mesh(jpath, results, tmp)
         rel = rel.replace('/', '\\')
-        dyn = dynamic_name(raw, rel) if dynamic else None
-        target = dyn or rel
-        os.makedirs(C.lp(os.path.join(pack_root, os.path.dirname(target))), exist_ok=True)
-        shutil.copyfile(os.path.join(tmp, 'item.mesh'), C.lp(os.path.join(pack_root, target)))
-        if dyn:
+        dyns = dynamic_names(raw, rel) if dynamic else []
+        # под каждое значение {body} нашего тела - своя копия (ArchiveXL ищет файл по точному имени)
+        for target in dyns or [rel]:
+            os.makedirs(C.lp(os.path.join(pack_root, os.path.dirname(target))), exist_ok=True)
+            shutil.copyfile(os.path.join(tmp, 'item.mesh'), C.lp(os.path.join(pack_root, target)))
+        C.log(f'export {rel} -> ' + (', '.join(dyns) + f'  (body={body_suffixes()})' if dyns
+                                    else 'same path (replaces the original)'))
+        for dyn in dyns:
             # Новая модель под тип нашего тела: материалы подключаем так же, как у оригинала
             for k in xl_patches(mod, rel):
                 xl.setdefault(k, []).append(dyn)
@@ -1128,7 +1373,8 @@ def make_item(context, prog):
     """Рефит загруженной вещи -> zip во внутренней папке экспорта."""
     res = item_fit(prog)
     item = os.path.splitext(os.path.basename(state['mesh']))[0]
-    path = build_zip(state['mod'], state['raw'], [(state['mesh'], state['json'], res)], zip_title(item), prog)
+    path = build_zip(state['mod'], state['raw'], [(state['mesh'], state['json'], res)], zip_title(item), prog,
+                     arch_part=item)
     note = ''
     if author_has_version(state['raw'], state['mesh']):
         note = tr(' (внимание: у автора мода уже есть своя версия этой вещи под твоё тело - рефит её заменит)',
@@ -1138,8 +1384,34 @@ def make_item(context, prog):
 
 def author_has_version(raw, rel):
     """У автора мода уже есть модель этой вещи под тип нашего тела (через шаблон {body})."""
-    dyn = dynamic_name(raw, rel.replace('/', os.sep))
-    return bool(dyn) and os.path.isfile(C.lp(os.path.join(raw, dyn)))
+    return any(os.path.isfile(C.lp(os.path.join(raw, d))) for d in dynamic_names(raw, rel.replace('/', os.sep)))
+
+
+def no_picks_reason():
+    """Почему «Весь мод» не нашёл вещей: понятный текст вместо общего «не нашёл»."""
+    mine = [m for m in state['meshes'] if looks_mine(m)]
+    female = gender() != 'male'
+    if not mine:
+        return tr('В этом моде нет вещей под ' + ('женскую' if female else 'мужскую') + ' V. '
+                  'Если пол определён неверно, выбери вещь вручную в режиме «Вещь».',
+                  'This mod has no items for ' + ('female' if female else 'male') + ' V. '
+                  'If that is wrong, choose an item manually with "Item".')
+    kinds = {body_kind(m) for m in mine}
+    if kinds == {'this'}:
+        return tr('Все вещи этого мода уже сделаны автором под твоё тело - рефит не нужен.',
+                  'All items in this mod are already made for your body by the author - no refit needed.')
+    names = []
+    for m in mine:
+        for t in re.split(r'[_\-.]+', os.path.splitext(os.path.basename(m))[0].lower()):
+            if t in OTHER_BODIES and t not in name_words(m):
+                names.append(BODY_NAMES.get(t, t.upper()))
+    bodies = ', '.join(dict.fromkeys(names)) or '?'
+    return tr(f'Все вещи этого мода - версии под другие тела ({bodies}), версии под обычное тело нет. '
+              'Авто-подгонка рассчитана на обычное тело, поэтому «Весь мод» их не берёт. '
+              'Выбери вещь вручную в режиме «Вещь».',
+              f'All items in this mod are versions for other bodies ({bodies}), there is no vanilla body version. '
+              'Auto fit expects the vanilla body, so "Whole mod" skips them. '
+              'Choose an item manually with "Item".')
 
 
 def make_mod(context, prog):
@@ -1150,10 +1422,11 @@ def make_mod(context, prog):
     if not picks:
         picks = [m for m in state['meshes'] if looks_mine(m) and body_kind(m) not in ('other', 'this')]
     if not picks:
-        raise UserError(tr('Не нашёл в моде вещей под обычное тело для этого пола. Выбери вещь вручную.',
-                           'No items for the vanilla body of this gender found in this mod. Choose an item manually.'))
+        raise UserError(no_picks_reason())
     # вещи, которые автор уже сделал под это тело, не трогаем: его ручная работа лучше авто-подгонки
-    own = [m for m in picks if author_has_version(state['raw'], m)]
+    use_saves = _ask.pop('use_saves', False)
+    saves = {norm_rel(m): sv for m in picks for sv in [find_save(m)] if save_ready(sv)} if use_saves else {}
+    own = [m for m in picks if author_has_version(state['raw'], m) and norm_rel(m) not in saves]
     picks = [m for m in picks if m not in own]
     if not picks:
         raise UserError(tr('У автора мода уже есть версии всех вещей под твоё тело - рефит не нужен. '
@@ -1166,6 +1439,10 @@ def make_mod(context, prog):
     os.makedirs(bdir)
     for n, rel in enumerate(picks):
         prog(5 + 55 * n / len(picks), f'{n + 1}/{len(picks)} {os.path.basename(rel)}')
+        sv = saves.get(norm_rel(rel))
+        if sv:  # твоё сохранение вместо авто-подгонки
+            items.append((rel, os.path.join(sv[0], 'item.mesh.json'), saved_results(sv)))
+            continue
         src = os.path.join(bdir, f'{n}.mesh')
         shutil.copyfile(C.lp(os.path.join(state['raw'], rel)), src)
         jpath = C.serialize(src, bdir)
@@ -1212,6 +1489,69 @@ def make_tattoos(context, prog):
 
 
 MAKERS = {'ITEM': make_item, 'MOD': make_mod, 'TATTOO': make_tattoos}
+_ask = {}  # ответ из окна «взять сохранённые вещи?» для «Весь мод»
+
+
+def mod_saved_items():
+    """Вещи мода (под обычное тело), для которых есть сохранение под текущее тело."""
+    if not state['mod']:
+        return []
+    return [m for m in state['meshes'] if looks_mine(m) and body_kind(m) != 'other' and save_ready(find_save(m))]
+
+
+def need_saves_question(context):
+    return context.scene.refit_scope == 'MOD' and 'use_saves' not in _ask and bool(mod_saved_items())
+
+
+class REFIT_OT_mod_saves_ask(bpy.types.Operator):
+    """Окно перед «Весь мод»: взять сохранённые вещи или подогнать всё заново."""
+    bl_idname = 'refit.mod_saves_ask'
+    bl_label = tr('Сохранённые вещи', 'Saved items')
+    then: bpy.props.StringProperty(options={'HIDDEN'})
+    filepath: bpy.props.StringProperty(options={'HIDDEN'})
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_popup(self, width=380)
+
+    def execute(self, context):
+        return {'FINISHED'}
+
+    def draw(self, context):
+        lay = self.layout
+        names = [os.path.splitext(os.path.basename(m))[0] for m in mod_saved_items()]
+        lay.label(text=tr(f'В этом моде есть сохранённые вещи: {len(names)}',
+                          f'This mod has saved items: {len(names)}'), icon='QUESTION')
+        for nm in names[:8]:
+            lay.label(text='   ' + nm)
+        if len(names) > 8:
+            lay.label(text=f'   … +{len(names) - 8}')
+        lay.label(text=tr('Взять их как ты сохранил или подогнать всё заново?',
+                          'Use them as you saved them or auto fit everything again?'))
+        row = lay.row(align=True)
+        row.scale_y = 1.3
+        for use, text in ((True, tr('Взять сохранённые', 'Use saved')), (False, tr('Подогнать заново', 'Fit again'))):
+            op = row.operator('refit.mod_saves_choose', text=text)
+            op.use, op.then, op.filepath = use, self.then, self.filepath
+
+
+class REFIT_OT_mod_saves_choose(bpy.types.Operator):
+    bl_idname = 'refit.mod_saves_choose'
+    bl_label = tr('Выбор', 'Choice')
+    bl_options = {'INTERNAL'}
+    use: bpy.props.BoolProperty()
+    then: bpy.props.StringProperty()
+    filepath: bpy.props.StringProperty()
+
+    def execute(self, context):
+        _ask['use_saves'] = self.use
+        try:
+            if self.then == 'zip':
+                bpy.ops.refit.export_zip('EXEC_DEFAULT', filepath=self.filepath)
+            else:
+                bpy.ops.refit.export_vortex('EXEC_DEFAULT')
+        finally:
+            _ask.pop('use_saves', None)
+        return {'FINISHED'}
 
 
 def run_export(context, title):
@@ -1250,6 +1590,9 @@ class REFIT_OT_export_zip(bpy.types.Operator):
         dest = self.filepath or os.path.join(C.output_dir(), C.fs_name(default_zip_name(context))[:150] + '.zip')
         if not dest.lower().endswith('.zip'):
             dest += '.zip'
+        if need_saves_question(context) and not bpy.app.background:
+            bpy.ops.refit.mod_saves_ask('INVOKE_DEFAULT', then='zip', filepath=dest)
+            return {'FINISHED'}
         path, what = run_export(context, tr('Сохраняю zip', 'Saving zip'))
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         shutil.copyfile(path, dest)
@@ -1274,6 +1617,9 @@ class REFIT_OT_export_vortex(bpy.types.Operator):
         if not vortex:
             raise UserError(tr('Не нашёл Vortex. Сохрани zip кнопкой «Сохранить zip…» и перетащи его в Vortex вручную.',
                                'Vortex not found. Save the zip with "Save zip…" and drag it into Vortex manually.'))
+        if need_saves_question(context) and not bpy.app.background:
+            bpy.ops.refit.mod_saves_ask('INVOKE_DEFAULT', then='vortex')
+            return {'FINISHED'}
         path, what = run_export(context, tr('Отправляю в Vortex', 'Sending to Vortex'))
         C.send_to_vortex(vortex, path)
         report(self, tr(f'Отправлено в Vortex ({what}). Если Vortex спросит - подтверди установку, '
@@ -1414,6 +1760,47 @@ def save_items(self, context):
     return C_keep('saves', [(str(i), s, '') for i, s in enumerate(state['saves'])])
 
 
+def norm_rel(rel):
+    return rel.replace('\\', '/').lower()
+
+
+def save_name(mod, rel):
+    return C.safe(C.clean_mod_name(mod['name']), 30) + '__' + C.safe(os.path.splitext(os.path.basename(rel))[0], 40)
+
+
+def find_save(rel, mod=None):
+    """Сохранённая работа этой вещи: (папка, meta или None для старых сохранений) или None."""
+    mod = mod or state['mod']
+    if not mod:
+        return None
+    d = os.path.join(C.SAVES, save_name(mod, rel))
+    if not os.path.isfile(os.path.join(d, 'work.blend')):
+        return None
+    meta = None
+    try:
+        meta = json.load(open(os.path.join(d, 'meta.json'), encoding='utf-8'))
+    except Exception:
+        pass
+    if meta and norm_rel(meta.get('mesh', '')) != norm_rel(rel):
+        return None  # другая вещь с таким же именем
+    return d, meta
+
+
+def save_ready(sv):
+    """Сохранение можно взять без открытия .blend: оно под текущее тело и в нём есть позиции."""
+    if not sv or not sv[1]:
+        return False
+    d, meta = sv
+    return meta.get('profile') == body().info['id'] and all(
+        os.path.isfile(os.path.join(d, f)) for f in ('pos.npy', 'orig.npy', 'item.mesh.json'))
+
+
+def saved_results(sv):
+    d, meta = sv
+    return item_results(os.path.join(d, 'item.mesh.json'), np.load(os.path.join(d, 'pos.npy')),
+                        np.load(os.path.join(d, 'orig.npy')), [tuple(r) for r in meta['ranges']])
+
+
 class REFIT_OT_save(bpy.types.Operator):
     bl_idname = 'refit.save'
     bl_label = tr('Сохранить работу', 'Save work')
@@ -1424,8 +1811,7 @@ class REFIT_OT_save(bpy.types.Operator):
             report(self, tr('Нечего сохранять: сначала загрузи вещь', 'Nothing to save: load an item first'), 'WARNING')
             return {'CANCELLED'}
         get_pos(ob)  # выйти из режима лепки
-        name = C.safe(C.clean_mod_name(state['mod']['name']), 30) + '__' + \
-            C.safe(os.path.splitext(os.path.basename(state['mesh']))[0], 40)
+        name = save_name(state['mod'], state['mesh'])
         d = os.path.join(C.SAVES, name)
         os.makedirs(d, exist_ok=True)
         # копия данных вещи: рабочая папка мода перезаписывается при загрузке другой вещи
@@ -1436,6 +1822,9 @@ class REFIT_OT_save(bpy.types.Operator):
             np.save(os.path.join(d, 'base.npy'), state['base'])
         elif os.path.exists(os.path.join(d, 'base.npy')):
             os.remove(os.path.join(d, 'base.npy'))
+        np.save(os.path.join(d, 'pos.npy'), get_pos(ob))
+        json.dump({'mod_path': state['mod']['path'], 'mesh': state['mesh'], 'profile': body().info['id'],
+                   'ranges': state['ranges']}, open(os.path.join(d, 'meta.json'), 'w', encoding='utf-8'))
         sc = context.scene
         sc['refit_save'] = json.dumps({'mod': state['mod'], 'mesh': state['mesh'], 'raw': state['raw'],
                                        'json': os.path.join(d, 'item.mesh.json'), 'orig': os.path.join(d, 'orig.npy'),
@@ -1490,6 +1879,8 @@ def restore_state(_):
     if d['raw'] and os.path.isdir(d['raw']):
         state['meshes'] = sorted(os.path.relpath(os.path.join(dp, f), d['raw'])
                                  for dp, _, fs in os.walk(d['raw']) for f in fs if f.lower().endswith('.mesh'))
+        state['mod_gender'] = mod_gender(state['meshes'], (d.get('mod') or {}).get('name', ''))
+        state['name_words'] = find_name_words(state['meshes'], d['raw'])
     if not other_body:
         sc.refit_status = tr('Работа открыта: ', 'Work opened: ') + os.path.basename(d['mesh']) + \
             tr('. Продолжай правку.', '. Continue editing.')
@@ -1649,6 +2040,85 @@ def install_header():
         bpy.types.VIEW3D_HT_header.draw = header_draw
 
 
+APP_ROOT = os.path.dirname(CORE)
+APP_ICON = os.path.join(APP_ROOT, 'src', 'app.ico')
+APP_EXE = os.path.join(APP_ROOT, 'RefitStudio.exe')
+APP_ID = 'RefitStudio.Studio'
+_win = {'icons': None, 'appid': set()}
+
+
+def window_icon(h):
+    """Значок Refit Studio на окне Блендера (заголовок, панель задач, Alt+Tab). Сам Блендер не меняется."""
+    import ctypes
+    from ctypes import wintypes
+    u = ctypes.windll.user32
+    if _win['icons'] is None:
+        u.LoadImageW.restype = wintypes.HANDLE
+        u.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT,
+                                 ctypes.c_int, ctypes.c_int, wintypes.UINT]
+        u.SendMessageW.restype = ctypes.c_ssize_t
+        u.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, ctypes.c_size_t, ctypes.c_ssize_t]
+        if not os.path.exists(APP_ICON):
+            _win['icons'] = (None, None)
+            return
+        big_px = u.GetSystemMetrics(11) * 3 // 2   # чуть крупнее: панель задач на большом DPI
+        _win['icons'] = (u.LoadImageW(None, APP_ICON, 1, big_px, big_px, 0x10),
+                         u.LoadImageW(None, APP_ICON, 1, u.GetSystemMetrics(49), u.GetSystemMetrics(50), 0x10))
+    big, small = _win['icons']
+    if not big:
+        return
+    if u.SendMessageW(h, 0x7F, 1, 0) != big:   # WM_GETICON: Блендер мог вернуть свой
+        u.SendMessageW(h, 0x80, 1, big)        # WM_SETICON, большой
+        u.SendMessageW(h, 0x80, 0, small)      # маленький
+    if h not in _win['appid']:
+        _win['appid'].add(h)
+        window_app_id(h)
+
+
+def window_app_id(h):
+    """Своя кнопка на панели задач, не в одной куче с обычным Блендером."""
+    import ctypes, uuid
+    from ctypes import wintypes
+
+    class GUID(ctypes.Structure):
+        _fields_ = [('b', ctypes.c_ubyte * 16)]
+
+    class PKEY(ctypes.Structure):
+        _fields_ = [('fmtid', GUID), ('pid', wintypes.DWORD)]
+
+    class PROPVARIANT(ctypes.Structure):
+        _fields_ = [('vt', ctypes.c_ushort), ('r', ctypes.c_ushort * 3), ('p', ctypes.c_void_p), ('p2', ctypes.c_void_p)]
+
+    def guid(s):
+        g = GUID()
+        g.b[:] = list(uuid.UUID(s).bytes_le)
+        return g
+
+    ps = ctypes.c_void_p()
+    iid = guid('886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99')   # IPropertyStore
+    sh = ctypes.windll.shell32
+    sh.SHGetPropertyStoreForWindow.argtypes = [wintypes.HWND, ctypes.c_void_p, ctypes.c_void_p]
+    if sh.SHGetPropertyStoreForWindow(h, ctypes.byref(iid), ctypes.byref(ps)) != 0 or not ps:
+        return
+    vt = ctypes.cast(ps, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+    set_value = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, ctypes.POINTER(PKEY),
+                                   ctypes.POINTER(PROPVARIANT))(vt[6])
+    commit = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p)(vt[7])
+    release = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)(vt[2])
+    fm = '9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3'
+    keep = []
+    # закрепить кнопку = запускать Refit Studio, а не голый Блендер; ID ставится последним
+    for pid, text in ((2, f'"{APP_EXE}"'), (3, f'{APP_EXE},0'), (4, 'Refit Studio'), (5, APP_ID)):
+        buf = ctypes.create_unicode_buffer(text)
+        keep.append(buf)
+        pv = PROPVARIANT()
+        pv.vt = 31   # VT_LPWSTR
+        pv.p = ctypes.addressof(buf)
+        set_value(ps, ctypes.byref(PKEY(guid(fm), pid)), ctypes.byref(pv))
+    commit(ps)
+    release(ps)
+
+
 def window_title():
     """«Refit Studio — тело» в заголовке окна вместо «Blender». Blender иногда возвращает своё - ставим снова."""
     try:
@@ -1667,6 +2137,10 @@ def window_title():
                     u.GetWindowTextW(h, buf, 256)
                     if buf.value != title:
                         u.SetWindowTextW(h, title)
+                    try:
+                        window_icon(h)
+                    except Exception:
+                        pass
             return True
         u.EnumWindows(ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(cb), 0)
     except Exception:
@@ -1801,6 +2275,7 @@ class REFIT_PT_panel(bpy.types.Panel):
         lay = self.layout
         big(lay, 1.5).prop(sc, 'refit_tab', expand=True)
         lay.separator()
+        draw_bodyfix(lay)
         {'FIT': self.draw_fit, 'SCULPT': self.draw_sculpt, 'EXPORT': self.draw_export}[sc.refit_tab](lay, context)
         if sc.refit_status:
             lay.separator()
@@ -1884,8 +2359,28 @@ class REFIT_PT_panel(bpy.types.Panel):
 classes = (REFIT_OT_add_mod, REFIT_OT_remove_mod, REFIT_OT_choose_mod, REFIT_OT_choose_mesh, REFIT_OT_autofit,
            REFIT_OT_reset, REFIT_OT_sculpt, REFIT_OT_brush, REFIT_OT_sculpt_done,
            REFIT_OT_check, REFIT_OT_export_zip, REFIT_OT_export_vortex, REFIT_OT_export_mesh,
-           REFIT_OT_export_menu, REFIT_OT_save, REFIT_OT_open,
-           REFIT_PT_panel)
+           REFIT_OT_export_menu, REFIT_OT_save, REFIT_OT_open, REFIT_OT_mod_saves_ask, REFIT_OT_mod_saves_choose,
+           REFIT_OT_fix_body, REFIT_PT_panel)
+
+
+# у экспорта ошибку легко не заметить в строке статуса («нажал В Vortex - ничего не произошло»),
+# поэтому у этих кнопок она ещё и всплывает окном
+POPUP_OPS = {'refit.export_zip', 'refit.export_vortex', 'refit.export_mesh', 'refit.mod_saves_choose'}
+
+
+def popup_error(msg, title):
+    if bpy.app.background:
+        return
+    import textwrap
+    lines = [l for p in str(msg).splitlines() for l in (textwrap.wrap(p, 72) or [''])]
+
+    def draw(menu, context):
+        for l in lines:
+            menu.layout.label(text=l)
+    try:
+        bpy.context.window_manager.popup_menu(draw, title=title, icon='ERROR')
+    except Exception:
+        pass
 
 
 def logged(cls):
@@ -1899,11 +2394,17 @@ def logged(cls):
             return res
         except UserError as e:
             report(self, str(e), 'WARNING')
+            C.log(f'{cls.bl_idname}: {e}')
+            if cls.bl_idname in POPUP_OPS:
+                popup_error(e, tr('Не получилось', 'Could not export'))
             return {'CANCELLED'}
         except Exception as e:
             C.log(f'{cls.bl_idname} ERROR:\n{traceback.format_exc()}')
-            report(self, tr('Ошибка: ', 'Error: ') + str(e).strip().splitlines()[-1][:250] +
-                   tr(' (подробности в log.txt)', ' (details in log.txt)'), 'ERROR')
+            msg = tr('Ошибка: ', 'Error: ') + str(e).strip().splitlines()[-1][:250] + \
+                tr(' (подробности в log.txt)', ' (details in log.txt)')
+            report(self, msg, 'ERROR')
+            if cls.bl_idname in POPUP_OPS:
+                popup_error(msg, tr('Ошибка', 'Error'))
             return {'CANCELLED'}
     cls.execute = execute
     return cls
@@ -1958,6 +2459,7 @@ def register():
 
 def start():
     start_clothing_scan()  # пока строится сцена, в фоне ищем моды с одеждой
+    check_body_patches()  # мод тела подключает метку Body:<тег>?
     if not bpy.app.background:
         # focus_view здесь не вызываем: переключение экрана из таймера иногда роняет Blender.
         # Режим «только 3D-вид» сохранён в самом studio.blend (tests/make_studio_blend.py).

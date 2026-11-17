@@ -21,9 +21,9 @@ using System.Reflection;
 [assembly: AssemblyProduct("Refit Studio")]
 [assembly: AssemblyCompany("Altshuler")]
 [assembly: AssemblyCopyright("Copyright (c) 2026 Altshuler")]
-[assembly: AssemblyVersion("0.3.0.0")]
-[assembly: AssemblyFileVersion("0.3.0.0")]
-[assembly: AssemblyInformationalVersion("0.3.0")]
+[assembly: AssemblyVersion("0.4.0.0")]
+[assembly: AssemblyFileVersion("0.4.0.0")]
+[assembly: AssemblyInformationalVersion("0.4.0")]
 
 namespace RefitStudio
 {
@@ -146,6 +146,49 @@ namespace RefitStudio
         public static bool GameOk(string p) { return p != "" && File.Exists(Path.Combine(p, "bin", "x64", "Cyberpunk2077.exe")); }
         public static bool WkOk(string p) { return p != "" && File.Exists(p) && Path.GetFileName(p).ToLower().Contains("wolvenkit"); }
         public static bool BlenderOk(string p) { return p != "" && File.Exists(p) && Path.GetFileName(p).ToLower() == "blender.exe"; }
+
+        // WolvenKit CLI работает на .NET (сейчас 10). Какая версия нужна, пишет его runtimeconfig.json рядом с exe.
+        // 0 = проверять нечего (файла нет или сборка со встроенным .NET).
+        public static int DotNetNeeded(string wkExe)
+        {
+            try
+            {
+                var rc = Path.Combine(Path.GetDirectoryName(wkExe), Path.GetFileNameWithoutExtension(wkExe) + ".runtimeconfig.json");
+                if (!File.Exists(rc)) return 0;
+                string t = File.ReadAllText(rc);
+                if (t.Contains("includedFrameworks")) return 0;
+                var m = Regex.Match(t, "\"name\"\\s*:\\s*\"Microsoft\\.NETCore\\.App\"\\s*,\\s*\"version\"\\s*:\\s*\"(\\d+)\\.");
+                return m.Success ? int.Parse(m.Groups[1].Value) : 0;
+            }
+            catch { return 0; }
+        }
+
+        // ищет .NET там же, где его ищет сам WolvenKit: DOTNET_ROOT, путь из реестра установщика, Program Files\dotnet
+        public static bool DotNetInstalled(int major)
+        {
+            var roots = new List<string>();
+            foreach (var v in new[] { "DOTNET_ROOT_X64", "DOTNET_ROOT" }) { var e = Environment.GetEnvironmentVariable(v); if (!string.IsNullOrEmpty(e)) roots.Add(e); }
+            try
+            {
+                using (var hk = Microsoft.Win32.RegistryKey.OpenBaseKey(Microsoft.Win32.RegistryHive.LocalMachine, Microsoft.Win32.RegistryView.Registry32))
+                using (var k = hk.OpenSubKey(@"SOFTWARE\dotnet\Setup\InstalledVersions\x64"))
+                    if (k != null && k.GetValue("InstallLocation") is string) roots.Add((string)k.GetValue("InstallLocation"));
+            }
+            catch { }
+            roots.Add(Path.Combine(Environment.GetEnvironmentVariable("ProgramW6432") ?? Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "dotnet"));
+            foreach (var r in roots)
+            {
+                try
+                {
+                    var d = Path.Combine(r, @"shared\Microsoft.NETCore.App");
+                    if (Directory.Exists(d) && Directory.GetDirectories(d).Any(x => Path.GetFileName(x).StartsWith(major + "."))) return true;
+                }
+                catch { }
+            }
+            return false;
+        }
+
+        public static bool WkRuntimeOk(string wkExe) { int n = DotNetNeeded(wkExe); return n == 0 || DotNetInstalled(n); }
 
         public static string BlenderVersion(string exe)
         {
@@ -727,13 +770,14 @@ namespace RefitStudio
             RefreshSetup();
             RefreshBodies();
             ShowSetup(!SetupOk());
+            OfferDotNet();
             if (Environment.GetCommandLineArgs().Contains("--add-body") && SetupOk()) AddBody();
             if (Environment.GetCommandLineArgs().Contains("--setup")) ShowSetup(true);
         }
 
         bool SetupOk()
         {
-            return App.BlenderOk(App.Str(cfg, "blender")) && App.WkOk(App.Str(cfg, "wolvenkit")) && App.GameOk(App.Str(cfg, "game"))
+            return App.BlenderOk(App.Str(cfg, "blender")) && App.WkOk(App.Str(cfg, "wolvenkit")) && App.WkRuntimeOk(App.Str(cfg, "wolvenkit")) && App.GameOk(App.Str(cfg, "game"))
                 && App.List(cfg, "sources").Count > 0 && (blenderVer == "" || App.BlenderNewEnough(blenderVer));
         }
 
@@ -990,7 +1034,9 @@ namespace RefitStudio
             bool bl = App.BlenderOk(blPath.Text);
             if (bl && blenderVer != "" && !App.BlenderNewEnough(blenderVer)) SetStatus(blStatus, false, "", App.T("версия ", "version ") + blenderVer + App.T(" - нужна 4.2+", " - 4.2+ needed"));
             else SetStatus(blStatus, bl, App.T("найден", "found") + (blenderVer != "" ? " (" + blenderVer + ")" : ""), App.T("не найден", "not found"));
-            SetStatus(wkStatus, App.WkOk(wkPath.Text), App.T("найден", "found"), App.T("не найден", "not found"));
+            if (App.WkOk(wkPath.Text) && !App.WkRuntimeOk(wkPath.Text))
+                SetStatus(wkStatus, false, "", App.T("нужен .NET ", "needs .NET ") + App.DotNetNeeded(wkPath.Text) + App.T(" (кнопка Скачать)", " (click Download)"));
+            else SetStatus(wkStatus, App.WkOk(wkPath.Text), App.T("найден", "found"), App.T("не найден", "not found"));
             SetStatus(gmStatus, App.GameOk(gmPath.Text), App.T("найдена", "found"), App.T("не найдена", "not found"));
             sources.Items.Clear();
             foreach (var s in App.List(cfg, "sources")) sources.Items.Add(s);
@@ -1024,6 +1070,7 @@ namespace RefitStudio
             var f = PickFile(App.T("Где лежит WolvenKit.CLI.exe (консольная версия WolvenKit)", "Where is WolvenKit.CLI.exe (the console version of WolvenKit)"), "WolvenKit CLI|WolvenKit.CLI.exe;WolvenKit.Console.exe|" + App.T("Все .exe", "All .exe") + "|*.exe", App.Str(cfg, "wolvenkit"));
             if (f == null) return;
             cfg["wolvenkit"] = f; App.SaveConfig(cfg); RefreshSetup();
+            OfferDotNet();
         }
 
         void PickGame(object s, EventArgs e)
@@ -1061,8 +1108,59 @@ namespace RefitStudio
             cfg["sources"] = l; App.SaveConfig(cfg); RefreshSetup();
         }
 
+        // WolvenKit есть, а .NET для него нет: спрашиваем, поставить ли
+        void OfferDotNet()
+        {
+            string wk = App.Str(cfg, "wolvenkit");
+            if (!App.WkOk(wk) || App.WkRuntimeOk(wk)) return;
+            int n = App.DotNetNeeded(wk);
+            if (MessageBox.Show(this, App.T("Для WolvenKit CLI нужен .NET " + n + " Runtime, а на этом компьютере его нет. Без него не получится сделать профиль тела и открыть мастерскую.\n\n" +
+                "Скачать и установить его сейчас? Это официальный установщик Microsoft (около 30 МБ), он откроется как обычная установка программы.",
+                "WolvenKit CLI needs the .NET " + n + " Runtime, and it is not installed on this PC. Without it you can't build a body profile or open the workshop.\n\n" +
+                "Download and install it now? This is the official Microsoft installer (about 30 MB), it opens like a normal program setup."),
+                ".NET " + n + " Runtime", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes) InstallDotNet(n);
+        }
+
+        void InstallDotNet(int n)
+        {
+            string page = "https://dotnet.microsoft.com/download/dotnet/" + n + ".0";
+            string file = Path.Combine(Path.GetTempPath(), "dotnet-runtime-" + n + "-win-x64.exe");
+            wkDownload.Enabled = false; wkStatus.Text = App.T("скачиваю .NET...", "downloading .NET..."); wkStatus.ForeColor = App.Dim;
+            new Thread(() =>
+            {
+                string err = null;
+                try
+                {
+                    var done = new ManualResetEvent(false); Exception dlErr = null;
+                    var wc = new WebClient(); wc.Headers[HttpRequestHeader.UserAgent] = "RefitStudio";
+                    wc.DownloadProgressChanged += (s, e) => BeginInvoke((Action)(() => wkStatus.Text = App.T("скачиваю .NET... ", "downloading .NET... ") + e.ProgressPercentage + "%"));
+                    wc.DownloadFileCompleted += (s, e) => { dlErr = e.Error; done.Set(); };
+                    wc.DownloadFileAsync(new Uri("https://aka.ms/dotnet/" + n + ".0/dotnet-runtime-win-x64.exe"), file);
+                    done.WaitOne();
+                    if (dlErr != null) throw dlErr;
+                    BeginInvoke((Action)(() => wkStatus.Text = App.T("идёт установка .NET...", "installing .NET...")));
+                    using (var p = Process.Start(file)) p.WaitForExit();
+                }
+                catch (Exception ex) { err = ex.Message; }
+                try { File.Delete(file); } catch { }
+                BeginInvoke((Action)(() =>
+                {
+                    wkDownload.Enabled = true;
+                    RefreshSetup();
+                    if (App.WkRuntimeOk(App.Str(cfg, "wolvenkit"))) { status.Text = App.T(".NET установлен.", ".NET installed."); return; }
+                    if (MessageBox.Show(this, (err != null ? App.T("Не получилось: ", "Something went wrong: ") + err + "\n\n" : App.T(".NET так и не установился.\n\n", ".NET is still not installed.\n\n")) +
+                        App.T("Открыть страницу Microsoft, чтобы скачать .NET " + n + " Runtime вручную? Нужен пункт \".NET Runtime\" или \".NET Desktop Runtime\", Windows x64.",
+                              "Open the Microsoft page to download the .NET " + n + " Runtime manually? Pick \".NET Runtime\" or \".NET Desktop Runtime\", Windows x64."),
+                        ".NET " + n + " Runtime", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
+                        try { Process.Start(page); } catch { }
+                }));
+            }) { IsBackground = true }.Start();
+        }
+
         void DownloadWk()
         {
+            string cur = App.Str(cfg, "wolvenkit");
+            if (App.WkOk(cur) && !App.WkRuntimeOk(cur)) { OfferDotNet(); return; }
             if (MessageBox.Show(this, App.T("Скачать WolvenKit CLI с официальной страницы проекта на GitHub (github.com/WolvenKit/WolvenKit, около 60 МБ)?\n\n" +
                 "Он распакуется в " + Path.Combine(App.Data, @"tools\wolvenkit") + " и в систему ничего не установит.",
                 "Download WolvenKit CLI from the official project page on GitHub (github.com/WolvenKit/WolvenKit, about 60 MB)?\n\n" +
@@ -1080,6 +1178,7 @@ namespace RefitStudio
                     if (exe != null) { cfg["wolvenkit"] = exe; App.SaveConfig(cfg); }
                     else MessageBox.Show(this, App.T("Не получилось скачать: ", "Download failed: ") + err + App.T("\n\nСкачай WolvenKit Console вручную со страницы релизов WolvenKit на GitHub и укажи WolvenKit.CLI.exe.", "\n\nDownload WolvenKit Console manually from the WolvenKit releases page on GitHub and point to WolvenKit.CLI.exe."));
                     RefreshSetup();
+                    if (exe != null) OfferDotNet();
                 }));
             }) { IsBackground = true }.Start();
         }

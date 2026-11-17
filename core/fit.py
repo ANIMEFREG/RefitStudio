@@ -217,7 +217,7 @@ LATTICE_LO = 0.001    # м: сдвиг тела меньше - точный
 LATTICE_HI = 0.005    # м: больше - полностью сглаженный (между - плавно)
 
 
-def lattice_delta(van, delta, index=None, normals=None):
+def lattice_delta(van, delta, index=None, normals=None, soft=None):
     index = index or Index(van)
     k = min(256, len(van))
     idx, dd = index.query(van, k)
@@ -229,6 +229,8 @@ def lattice_delta(van, delta, index=None, normals=None):
     mag = (mag[idx[:, :k2]] * w2).sum(1) / w2.sum(1)  # плавный переход между зонами
     t = np.clip((mag - LATTICE_LO) / (LATTICE_HI - LATTICE_LO), 0, 1)[:, None]
     out = delta * (1 - t) + smooth * t
+    if soft is not None:
+        soft.append(out.copy())  # с гладким и вдоль нормали: для ткани далеко от кожи
     if normals is not None:
         # сглаживаем только сдвиг вдоль кожи, а расстояние до кожи (вдоль нормали) берём точное:
         # иначе на выпуклостях ткань уходит под кожу, а во впадинах отходит и зазор растёт
@@ -285,7 +287,9 @@ class Body:
         self.van_index = Index(self.van)
         self.surf_index = Index(self.surf)
         self.delta_exact = self.delta
-        self.delta = lattice_delta(self.van, self.delta, self.van_index, self.n_van)
+        soft = []
+        self.delta = lattice_delta(self.van, self.delta, self.van_index, self.n_van, soft)
+        self.delta_soft = soft[0]
         self._van_tree = None
         self._surf_obs = self._van_obs = None
         self._shell = {}
@@ -352,6 +356,9 @@ class Body:
         return self._shell[shell]
 
 
+SOFT_FAR = True       # ткань дальше SOFT_FROM от кожи повторяет рельеф тела мягче
+SOFT_FROM = 0.008     # м
+SOFT_TO = 0.025       # м: дальше - полностью сглаженный рельеф
 CLOTH_SMOOTH = 4      # проходов сглаживания сдвигов по сетке ткани (убирает мятость и "кашу" между ногами)
 
 
@@ -364,6 +371,11 @@ def autofit(points, body, shell=None, tris=None):
         # Сдвиг в ближайшей точке поверхности тела, плавно по треугольнику (без "ямок" у вершин)
         tri, bc, d0 = body.van_closest(points)
         near = (delta[tri] * bc[..., None]).sum(1)
+        if SOFT_FAR and not shell and body.info.get('gender') == 'male':
+            # толстая ткань далеко от кожи (пуховики, куртки) не повторяет каждую мышцу тела.
+            # Только мужские тела: рельеф мышц. На женских (большая грудь, Ishtar) стенд хуже.
+            ws = np.clip((d0 - SOFT_FROM) / (SOFT_TO - SOFT_FROM), 0, 1)[:, None]
+            near = near * (1 - ws) + (body.delta_soft[tri] * bc[..., None]).sum(1) * ws
         nn = (body.n_van[tri] * bc[..., None]).sum(1)
     else:
         idx, dd = body.van_index.query(points, K)
@@ -439,6 +451,10 @@ SETTLE_FOLD = 0.3        # сгиб: смещение точки от средн
 SETTLE_FOLD_RING = 1     # сколько колец соседей вокруг сгиба тоже не сглаживать
 MIN_GAP = 0.001       # м: ближе к коже ткань не подпускаем
 FEATHER = 0.002       # м: насколько подъём ткани может "расплыться" на соседние точки
+SHELL_FACES = True    # проверка граней ткани об оболочки татуировок
+# м: подъём грани об оболочку татуировки за проход. Было 1 см: у сгибов (ворот, подгиб рукава) грань
+# не выходит из-под оболочки, и за 3 прохода край отгибался на 15 мм. 1.5 мм: отгиба нет (<3 мм).
+SHELL_FACE_CAP = 0.0015
 
 
 LAYER_LOCK = True     # слои одежды (пояс поверх ткани, шлёвки, карманы) двигаются вместе
@@ -548,7 +564,7 @@ def settle(current, original, body, tris, iters=SETTLE_ITERS, shells=()):
                 bad = np.nonzero(g < al)[0]
                 if not len(bad):
                     continue
-                need = np.minimum((al[bad] - g[bad]) / (bc * bc).sum(), 0.01)  # не больше 1 см за проход
+                need = np.minimum((al[bad] - g[bad]) / (bc * bc).sum(), 0.01 if k in SKIN else SHELL_FACE_CAP)  # не больше 1 см за проход
                 for c in range(3):
                     if bc[c] == 0:
                         continue
@@ -610,7 +626,7 @@ def settle(current, original, body, tris, iters=SETTLE_ITERS, shells=()):
         X = push(layer_lock(X, X0))
     for _ in range(3):
         X, k = collide_faces(X, SKIN)
-        if SHELLS:
+        if SHELLS and SHELL_FACES:
             X = feathered(lambda Z: collide_faces(Z, SHELLS), X)
         elif not k:
             break

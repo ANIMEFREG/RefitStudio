@@ -11,7 +11,7 @@ Nexus Mods page: https://www.nexusmods.com/cyberpunk2077/mods/37166
 2. Run `RefitStudio.exe`
 3. If Windows says "Windows protected your PC", click **More info** and then **Run anyway**
 
-You also need [Blender 4.2 or newer](https://www.blender.org/download/), the game and ArchiveXL. The launcher downloads WolvenKit CLI for you with one button. Full guide is in `README.txt` inside the zip.
+You also need [Blender 4.2 or newer](https://www.blender.org/download/), the game and ArchiveXL. The launcher downloads WolvenKit CLI for you with one button, and offers to install the [.NET 10 Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) that WolvenKit needs if it is missing. Full guide is in `README.txt` inside the zip.
 
 Older versions are on the [Releases](https://github.com/ANIMEFREG/RefitStudio/releases) page.
 
@@ -38,10 +38,25 @@ Put `RefitStudio.exe` next to the `core` folder and start it. You also need Blen
 
 ## Versions
 
-- **0.3.0** - this repository.
+- **0.4.0** - this repository.
 - **0.1.0** - the build submitted to Nexus Mods for file verification: https://github.com/ANIMEFREG/refit-studio-nexus-verification
 
 ## Changelog
+
+### 0.4.0
+
+- Your saved edits stay with each item, switching between items doesnt lose them
+- Every item is exported as its own small mod, so refits from one clothing mod dont overwrite each other
+- Whole mod asks if you want to use your saved items or fit everything again
+- Refits now show in game for bodies with CamelCase or several body tags, like AngelBody
+- If your body mod doesnt register its body tag (some VTK versions), the workshop warns you and can fix it with one click
+- Whole mod finds items that have no female or male mark in the name
+- Whole mod no longer skips items that have a body name in their name, like Songbird's Jacket
+- Clothing edges no longer lift away from a tattoo
+- Smoother fit on male bodies with big muscles
+- Export errors now show up in a popup
+- Clearer message when Whole mod finds nothing to refit
+- The launcher checks for the .NET 10 Runtime that WolvenKit needs and offers to install it
 
 ### 0.3.0
 

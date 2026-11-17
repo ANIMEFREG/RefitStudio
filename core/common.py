@@ -165,7 +165,13 @@ def wk(*args):
     r = subprocess.run([exe, *args, '-v', 'Minimal'], capture_output=True, text=True, encoding='utf-8',
                        errors='replace', creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     if r.returncode != 0:
-        raise RuntimeError('WolvenKit: ' + (r.stdout + r.stderr)[-600:])
+        out = r.stdout + r.stderr
+        if 'install or update .NET' in out or 'framework was not found' in out.lower():
+            raise RuntimeError(tr('WolvenKit CLI нужен .NET 10 Runtime, а он не установлен. Перезапусти лаунчер, он предложит его установить, '
+                                  'или скачай вручную: https://dotnet.microsoft.com/download/dotnet/10.0',
+                                  'WolvenKit CLI needs the .NET 10 Runtime, and it is not installed. Restart the launcher, it will offer to install it, '
+                                  'or download it manually: https://dotnet.microsoft.com/download/dotnet/10.0'))
+        raise RuntimeError('WolvenKit: ' + out[-600:])
     return r.stdout
 
 
@@ -516,22 +522,155 @@ def body_parts_in(mod, gender='female'):
     return found
 
 
-def body_tag(mod):
-    """Тип тела, который мод регистрирует для ArchiveXL (player: bodyTypes: [ X ])."""
-    for x in mod['xls']:
+def body_tags(mod):
+    """Все типы тела, которые мод регистрирует для ArchiveXL (player: bodyTypes: [ X, Y ] или списком)."""
+    out = []
+    for x in mod.get('xls', []):
         try:
             text = open(x, encoding='utf-8', errors='ignore').read()
         except OSError:
             continue
-        m = re.search(r'bodyTypes\s*:\s*\[([^\]]*)\]', text)
-        if m:
-            tags = [t.strip(' \'"') for t in m.group(1).split(',') if t.strip(' \'"')]
-            if tags:
-                return tags[0]
-        m = re.search(r'bodyTypes\s*:\s*\n\s*-\s*([A-Za-z0-9_]+)', text)
-        if m:
-            return m.group(1)
-    return ''
+        for m in re.finditer(r'bodyTypes\s*:\s*\[([^\]]*)\]', text):
+            out += [t.strip(' \'"') for t in m.group(1).split(',') if t.strip(' \'"')]
+        for m in re.finditer(r'bodyTypes\s*:\s*\n((?:[ \t]*-[ \t]*[^\n]+\n?)+)', text):
+            out += [t.strip(' -\t\'"') for t in m.group(1).splitlines() if t.strip(' -\t\'"')]
+    return list(dict.fromkeys(out))
+
+
+def body_tag(mod):
+    """Первый (главный) тип тела мода для ArchiveXL."""
+    tags = body_tags(mod)
+    return tags[0] if tags else ''
+
+
+def snake_case(s):
+    """Как ArchiveXL превращает тип тела в {body} в путях (Str::SnakeCase): BoobsForBack -> boobs_for_back,
+    Slim_Thin -> slim_thin, EBB -> ebb. Подчёркивание ставится перед большой буквой после маленькой/цифры."""
+    out, split = '', False
+    for c in s:
+        if c.isupper():
+            if split:
+                out += '_'
+                split = False
+            out += c.lower()
+        else:
+            out += c
+            split = c != '_'
+    return out
+
+
+# ---------- мод тела, который не подключает свою метку Body:<тег> ----------
+# ArchiveXL узнаёт тело по метке Body:<тег> в патч-сущности игрока (base\characters\entities\player\patch\*.ent).
+# Её надо подключить в .xl мода тела (resource: patch: <ent>: - !include player_wa.ent). Если этого нет,
+# игра считает тело ванильным и берёт модели base_body: все рефиты под {body} невидимы (SLIM THIN VTK 1.x).
+
+PATCH_DIR = 'base\\characters\\entities\\player\\patch\\'
+PATCH_TARGET = '!include player_wa.ent'
+
+
+def body_mod_files(mod_path):
+    """Мод тела по пути из профиля: {'archives', 'xls'}."""
+    if os.path.isdir(mod_path):
+        return {'archives': _archives_in(mod_path), 'xls': _xls_in(mod_path)}
+    if os.path.isfile(mod_path):
+        d = os.path.dirname(mod_path)
+        stem = os.path.splitext(os.path.basename(mod_path))[0].lower()
+        xls = [os.path.join(d, x) for x in os.listdir(d) if x.lower().endswith('.xl') and
+               (x.lower().startswith(stem) or os.path.isfile(mod_path + '.xl'))]
+        return {'archives': [mod_path], 'xls': xls}
+    return {'archives': [], 'xls': []}
+
+
+def _xl_text(xls):
+    out = ''
+    for x in xls:
+        try:
+            out += open(x, encoding='utf-8', errors='ignore').read().lower().replace('/', '\\') + '\n'
+        except OSError:
+            pass
+    return out
+
+
+def unregistered_body_patches(mod):
+    """Патч-сущности игрока из архивов мода тела, которые его .xl не подключает. [] - всё в порядке."""
+    tags = body_tags(mod)
+    if not tags or not mod['archives']:
+        return []
+    ents = set()
+    try:
+        ents |= {f for f in _list_files(mod) if f.startswith(PATCH_DIR) and f.endswith('.ent')}
+    except Exception:
+        pass
+    # если WolvenKit не знает имён файлов - проверяем обычные имена по хэшу
+    hashes = set()
+    for a in mod['archives']:
+        try:
+            hashes |= archive_hashes(a)
+        except Exception:
+            pass
+    for t in tags:
+        for n in {snake_case(t), t.lower()}:
+            p = PATCH_DIR + n + '.ent'
+            if fnv1a64(p) in hashes:
+                ents.add(p)
+    text = _xl_text(mod['xls'])
+    return sorted(e for e in ents if e not in text)
+
+
+def fix_body_patches(mod, ents):
+    """Подключить патч-сущности в .xl мода тела (тот, где bodyTypes). Файл правится на месте (жёсткие
+    ссылки Vortex не рвутся), копия до правки - в DATA\\backups. Возвращает (путь .xl, путь копии)."""
+    xls = [x for x in mod['xls'] if re.search(r'bodyTypes\s*:', open(x, encoding='utf-8', errors='ignore').read())]
+    if not xls:
+        raise RuntimeError(tr('Не нашёл .xl мода тела с bodyTypes.', "Could not find the body mod's .xl with bodyTypes."))
+    xl = xls[0]
+    raw = open(xl, 'rb').read()
+    text = raw.decode('utf-8-sig', errors='ignore')
+    nl = '\r\n' if '\r\n' in text else '\n'
+    lines = text.splitlines()
+    # есть ли уже блок resource: / patch: - вставляем в него с тем же отступом, что у соседей
+    pos = None
+    for i, l in enumerate(lines):
+        if l.strip() == 'resource:' and not l.startswith((' ', '\t')):
+            for j in range(i + 1, len(lines)):
+                s = lines[j].strip()
+                if not s or s.startswith('#'):
+                    continue
+                if not lines[j].startswith((' ', '\t')):
+                    break
+                if s == 'patch:':
+                    pos = j
+                    break
+            break
+    if pos is not None:
+        ind = None
+        for k in range(pos + 1, len(lines)):
+            if lines[k].strip() and not lines[k].strip().startswith('#'):
+                child = lines[k][:len(lines[k]) - len(lines[k].lstrip())]
+                if len(child) > len(lines[pos]) - len(lines[pos].lstrip()):
+                    ind = child
+                break
+        ind = ind or (lines[pos][:len(lines[pos]) - len(lines[pos].lstrip())] + '    ')
+        add = []
+        for e in ents:
+            add += [f'{ind}{e}:', f'{ind}    - {PATCH_TARGET}']
+        lines[pos + 1:pos + 1] = add
+    else:
+        lines += ['', '# Refit Studio: register the body tag (Body:<type>) so ArchiveXL knows this body',
+                  'resource:', '    patch:']
+        for e in ents:
+            lines += [f'        {e}:', f'            - {PATCH_TARGET}']
+    bdir = os.path.join(DATA, 'backups')
+    os.makedirs(bdir, exist_ok=True)
+    bak = os.path.join(bdir, f'{datetime.datetime.now():%Y%m%d_%H%M%S}_' + os.path.basename(xl))
+    with open(bak, 'wb') as f:
+        f.write(raw)
+    with open(xl, 'r+b') as f:  # на месте: тот же файл, жёсткая ссылка в папке игры тоже обновится
+        f.seek(0)
+        f.write((nl.join(lines) + nl).encode('utf-8'))
+        f.truncate()
+    log(f'body fix: {xl} + {ents} (backup {bak})')
+    return xl, bak
 
 
 # ---------- профили ----------

@@ -118,7 +118,7 @@ def _compare_and_save(mod, name, pid, van, body, tmp, gender='female'):
     progress(92, C.tr('Сохраняю профиль...', 'Saving the profile...'))
     np.savez_compressed(os.path.join(tmp, 'body.npz'), **out)
     info = {'id': pid, 'name': name or mod['name'], 'mod_name': mod['name'], 'mod_path': mod['path'],
-            'tag': C.body_tag(mod), 'parts': info_parts, 'tattoos': tattoos, 'gender': gender,
+            'tag': C.body_tag(mod), 'tags': C.body_tags(mod), 'parts': info_parts, 'tattoos': tattoos, 'gender': gender,
             'created': datetime.datetime.now().isoformat(timespec='seconds'), 'version': 2}
     with open(os.path.join(tmp, 'profile.json'), 'w', encoding='utf-8') as f:
         json.dump(info, f, ensure_ascii=False, indent=2)
