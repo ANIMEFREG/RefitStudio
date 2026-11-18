@@ -38,10 +38,17 @@ Put `RefitStudio.exe` next to the `core` folder and start it. You also need Blen
 
 ## Versions
 
-- **0.4.0** - this repository.
+- **0.4.0.1** - this repository.
 - **0.1.0** - the build submitted to Nexus Mods for file verification: https://github.com/ANIMEFREG/refit-studio-nexus-verification
 
 ## Changelog
+
+### 0.4.0.1
+
+- Smooth rounded corners in the launcher
+- The launcher offers to make a desktop shortcut, and there is a button for it in settings
+- Ctrl+S in the workshop saves your work and no longer asks to save the Blender file
+- The workshop window now has the Refit Studio icon (it was missing from the 0.4.0 zip)
 
 ### 0.4.0
 

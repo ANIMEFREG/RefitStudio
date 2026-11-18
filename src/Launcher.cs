@@ -21,9 +21,9 @@ using System.Reflection;
 [assembly: AssemblyProduct("Refit Studio")]
 [assembly: AssemblyCompany("Altshuler")]
 [assembly: AssemblyCopyright("Copyright (c) 2026 Altshuler")]
-[assembly: AssemblyVersion("0.4.0.0")]
-[assembly: AssemblyFileVersion("0.4.0.0")]
-[assembly: AssemblyInformationalVersion("0.4.0")]
+[assembly: AssemblyVersion("0.4.0.1")]
+[assembly: AssemblyFileVersion("0.4.0.1")]
+[assembly: AssemblyInformationalVersion("0.4.0.1")]
 
 namespace RefitStudio
 {
@@ -450,7 +450,7 @@ namespace RefitStudio
 
         public static Button Button(Control parent, string text, int x, int y, int w, int h, EventHandler click, bool accent = false)
         {
-            var b = new Button { Text = text, Left = App.S(x), Top = App.S(y), Width = App.S(w), Height = App.S(h), FlatStyle = FlatStyle.Flat,
+            var b = new RoundButton { Radius = accent ? 10 : 8, Text = text, Left = App.S(x), Top = App.S(y), Width = App.S(w), Height = App.S(h), FlatStyle = FlatStyle.Flat,
                 Font = accent ? Tech(12.5f) : F(9.5f), Cursor = Cursors.Hand,
                 BackColor = accent ? App.Accent : App.Btn, ForeColor = accent ? App.Bg : App.Text, UseVisualStyleBackColor = false };
             b.FlatAppearance.BorderSize = 0;
@@ -459,7 +459,6 @@ namespace RefitStudio
             if (accent) b.Text = text.ToUpper();
             b.EnabledChanged += (s, e) => { b.BackColor = b.Enabled ? (accent ? App.Accent : App.Btn) : Color.FromArgb(26, 26, 36);
                                              b.ForeColor = b.Enabled ? (accent ? App.Bg : App.Text) : App.Dim; };
-            Round(b, accent ? 10 : 8);
             if (click != null) b.Click += click;
             parent.Controls.Add(b); return b;
         }
@@ -472,13 +471,7 @@ namespace RefitStudio
             b.FlatAppearance.MouseOverBackColor = Color.FromArgb(34, 255, 255, 255);
             b.FlatAppearance.MouseDownBackColor = Color.FromArgb(50, 255, 255, 255);
             b.EnabledChanged += (s, e) => { b.BackColor = Color.FromArgb(b.Enabled ? 14 : 6, 255, 255, 255); };
-            b.Paint += (s, e) =>
-            {
-                e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                using (var pen = new Pen(Color.FromArgb(b.Enabled ? 52 : 24, 255, 255, 255), 1f))
-                using (var path = RoundRect(new Rectangle(0, 0, b.Width - 1, b.Height - 1), App.S(8)))
-                    e.Graphics.DrawPath(pen, path);
-            };
+            ((RoundButton)b).Glass = true;
             return b;
         }
 
@@ -488,37 +481,10 @@ namespace RefitStudio
             return Label(parent, text.ToUpper(), x, y, w, 22, 9f, App.Dim, FontStyle.Bold);
         }
 
-        // скруглённые углы, как у кнопок и панелей в Blender
-        public static void Round(Control c, int radius)
-        {
-            Action apply = () =>
-            {
-                int d = App.S(radius) * 2;
-                if (c.Width < d || c.Height < d) return;
-                var p = new System.Drawing.Drawing2D.GraphicsPath();
-                p.AddArc(0, 0, d, d, 180, 90);
-                p.AddArc(c.Width - d, 0, d, d, 270, 90);
-                p.AddArc(c.Width - d, c.Height - d, d, d, 0, 90);
-                p.AddArc(0, c.Height - d, d, d, 90, 90);
-                p.CloseFigure();
-                c.Region = new Region(p);
-            };
-            c.SizeChanged += (s, e) => apply();
-            apply();
-        }
-
         // «стеклянная» карточка: полупрозрачная (сквозь неё видно пятна света фона) и с тонкой рамкой
         public static Panel Card(Control parent, int x, int y, int w, int h)
         {
-            var p = new Panel { Left = App.S(x), Top = App.S(y), Width = App.S(w), Height = App.S(h), BackColor = Color.FromArgb(150, App.Card) };
-            Round(p, 14);
-            p.Paint += (s, e) =>
-            {
-                e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                using (var pen = new Pen(Color.FromArgb(40, 255, 255, 255), 1f))
-                using (var path = RoundRect(new Rectangle(0, 0, p.Width - 1, p.Height - 1), App.S(14)))
-                    e.Graphics.DrawPath(pen, path);
-            };
+            var p = new RoundCard { Left = App.S(x), Top = App.S(y), Width = App.S(w), Height = App.S(h), Radius = 14 };
             parent.Controls.Add(p); return p;
         }
 
@@ -633,6 +599,108 @@ namespace RefitStudio
     // ---------- список тел на «стекле» ----------
     // Стандартный ListView не умеет быть прозрачным, поэтому список рисуем сами:
     // шапка мелкими заглавными, строки прямо на карточке, выбранная - с бирюзовой полоской слева.
+    // ---------- скруглённые кнопки и карточки ----------
+    // Углы не обрезаются маской (она режет лесенкой, без сглаживания): элемент сам рисует позади себя то,
+    // что лежит под ним (фон окна, карточку), а сверху свою скруглённую форму со сглаживанием.
+    static class Behind
+    {
+        // путь чуть внутри элемента: полпикселя от края, чтобы сглаженная рамка не срезалась
+        public static System.Drawing.Drawing2D.GraphicsPath Shape(Control c, int radius)
+        {
+            float r = Math.Min(App.S(radius), Math.Min(c.Width, c.Height) / 2f - 1f), d = r * 2;
+            float x = 0.5f, y = 0.5f, w = c.Width - 1f, h = c.Height - 1f;
+            var p = new System.Drawing.Drawing2D.GraphicsPath();
+            p.AddArc(x, y, d, d, 180, 90);
+            p.AddArc(x + w - d, y, d, d, 270, 90);
+            p.AddArc(x + w - d, y + h - d, d, d, 0, 90);
+            p.AddArc(x, y + h - d, d, d, 90, 90);
+            p.CloseFigure();
+            return p;
+        }
+    }
+
+    class RoundButton : Button
+    {
+        public int Radius = 8;
+        public bool Glass;          // стеклянная: тонкая светлая рамка
+        bool hover, down;
+
+        public RoundButton()
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
+                     ControlStyles.SupportsTransparentBackColor | ControlStyles.ResizeRedraw, true);
+        }
+
+        protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
+        protected override void OnMouseLeave(EventArgs e) { hover = false; down = false; Invalidate(); base.OnMouseLeave(e); }
+        protected override void OnMouseDown(MouseEventArgs e) { if (e.Button == MouseButtons.Left) { down = true; Invalidate(); } base.OnMouseDown(e); }
+        protected override void OnMouseUp(MouseEventArgs e) { down = false; Invalidate(); base.OnMouseUp(e); }
+        protected override void OnPaintBackground(PaintEventArgs e) { }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            PaintParent(e);
+            Color fill = !Enabled ? BackColor : down ? FlatAppearance.MouseDownBackColor : hover ? FlatAppearance.MouseOverBackColor : BackColor;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            using (var path = Behind.Shape(this, Radius))
+            {
+                using (var b = new SolidBrush(fill)) g.FillPath(b, path);
+                if (Glass)
+                    using (var pen = new Pen(Color.FromArgb(Enabled ? 52 : 24, 255, 255, 255), 1f)) g.DrawPath(pen, path);
+            }
+            TextRenderer.DrawText(g, Text, Font, ClientRectangle, ForeColor,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
+        }
+
+        // то, что под кнопкой: фон и рисунок родителя на месте кнопки
+        void PaintParent(PaintEventArgs e)
+        {
+            if (Parent == null) return;
+            var st = e.Graphics.Save();
+            e.Graphics.TranslateTransform(-Left, -Top);
+            var pe = new PaintEventArgs(e.Graphics, new Rectangle(Left, Top, Width, Height));
+            InvokePaintBackground(Parent, pe);
+            InvokePaint(Parent, pe);
+            e.Graphics.Restore(st);
+        }
+    }
+
+    class RoundCard : Panel
+    {
+        public int Radius = 14;
+
+        public RoundCard()
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
+                     ControlStyles.SupportsTransparentBackColor | ControlStyles.ResizeRedraw, true);
+            BackColor = Color.Transparent;
+        }
+
+        // фон карточки рисуется здесь, поэтому прозрачные надписи и список внутри неё получают его целиком
+        protected override void OnPaintBackground(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            if (Parent != null)
+            {
+                var st = g.Save();
+                g.TranslateTransform(-Left, -Top);
+                var pe = new PaintEventArgs(g, new Rectangle(Left, Top, Width, Height));
+                InvokePaintBackground(Parent, pe);
+                InvokePaint(Parent, pe);
+                g.Restore(st);
+            }
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            using (var path = Behind.Shape(this, Radius))
+            using (var b = new SolidBrush(Color.FromArgb(150, App.Card)))
+            using (var pen = new Pen(Color.FromArgb(40, 255, 255, 255), 1f))
+            {
+                g.FillPath(b, path);
+                g.DrawPath(pen, path);
+            }
+        }
+    }
+
     class BodyList : Control
     {
         public class Row { public string[] Cols; public object Tag; }
@@ -771,6 +839,7 @@ namespace RefitStudio
             RefreshBodies();
             ShowSetup(!SetupOk());
             OfferDotNet();
+            OfferShortcut();
             if (Environment.GetCommandLineArgs().Contains("--add-body") && SetupOk()) AddBody();
             if (Environment.GetCommandLineArgs().Contains("--setup")) ShowSetup(true);
         }
@@ -1007,7 +1076,8 @@ namespace RefitStudio
             // язык - в правом верхнем углу карточки, выбранный подсвечен
             UI.Button(c, "English", 518, 10, 110, 28, (s, e) => SetLang("en"), App.Lang == "en");
             UI.Button(c, "Русский", 636, 10, 110, 28, (s, e) => SetLang("ru"), App.Lang == "ru");
-            doneBtn = UI.Button(c, App.T("Готово", "Done"), 590, 410, 156, 38, (s, e) => { if (SetupOk()) { ShowSetup(false); RefreshBodies(); } }, true);
+            doneBtn = UI.Button(c, App.T("Готово", "Done"), 590, 410, 156, 38, (s, e) => { if (SetupOk()) { ShowSetup(false); RefreshBodies(); OfferShortcut(); } }, true);
+            UI.Button(c, App.T("Ярлык на рабочем столе", "Desktop shortcut"), 18, 414, 210, 30, (s, e) => ShortcutButton());
         }
 
         Label Row(Control c, string title, ref int y, out TextBox box, EventHandler pick, string extra, EventHandler extraClick)
@@ -1109,6 +1179,87 @@ namespace RefitStudio
         }
 
         // WolvenKit есть, а .NET для него нет: спрашиваем, поставить ли
+        // ---------- ярлык на рабочем столе ----------
+        // REFIT_DESKTOP - другая папка вместо рабочего стола (для проверки "как у нового пользователя")
+        static string DesktopDir()
+        {
+            string d = Environment.GetEnvironmentVariable("REFIT_DESKTOP");
+            return !string.IsNullOrEmpty(d) ? d : Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+        }
+
+        // ярлыки Windows делает WScript.Shell; вызываем его через отражение, без лишних библиотек
+        static object Shell() { return Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell")); }
+        static object Call(object o, string m, params object[] a) { return o.GetType().InvokeMember(m, BindingFlags.InvokeMethod, null, o, a); }
+        static object GetProp(object o, string p) { return o.GetType().InvokeMember(p, BindingFlags.GetProperty, null, o, null); }
+        static void SetProp(object o, string p, object v) { o.GetType().InvokeMember(p, BindingFlags.SetProperty, null, o, new[] { v }); }
+
+        // есть ли уже ярлык на эту программу (на своём или общем рабочем столе), как бы он ни назывался
+        static bool HasShortcut()
+        {
+            string exe = Path.GetFullPath(Application.ExecutablePath);
+            var dirs = new List<string> { DesktopDir() };
+            if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("REFIT_DESKTOP")))
+                dirs.Add(Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory));
+            try
+            {
+                object sh = Shell();
+                foreach (var d in dirs)
+                {
+                    if (!Directory.Exists(d)) continue;
+                    foreach (var f in Directory.GetFiles(d, "*.lnk"))
+                    {
+                        try
+                        {
+                            string t = (string)GetProp(Call(sh, "CreateShortcut", f), "TargetPath");
+                            if (!string.IsNullOrEmpty(t) && string.Equals(Path.GetFullPath(t), exe, StringComparison.OrdinalIgnoreCase)) return true;
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        bool MakeShortcut()
+        {
+            try
+            {
+                string exe = Path.GetFullPath(Application.ExecutablePath);
+                object l = Call(Shell(), "CreateShortcut", Path.Combine(DesktopDir(), "Refit Studio.lnk"));
+                SetProp(l, "TargetPath", exe);
+                SetProp(l, "WorkingDirectory", Path.GetDirectoryName(exe));
+                SetProp(l, "IconLocation", exe + ",0");
+                SetProp(l, "Description", "Refit Studio");
+                Call(l, "Save");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, App.T("Не удалось создать ярлык: ", "Could not create the shortcut: ") + ex.Message, "Refit Studio");
+                return false;
+            }
+        }
+
+        // один раз, когда всё уже настроено: предложить ярлык (ответ запоминается, второй раз не спрашиваем)
+        void OfferShortcut()
+        {
+            if (!SetupOk() || App.Str(cfg, "shortcut_asked") == "yes") return;
+            cfg["shortcut_asked"] = "yes";
+            App.SaveConfig(cfg);
+            if (HasShortcut()) return;
+            if (MessageBox.Show(this, App.T("Создать ярлык Refit Studio на рабочем столе?", "Create a Refit Studio shortcut on the desktop?"),
+                    "Refit Studio", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes && MakeShortcut())
+                status.Text = App.T("Ярлык создан на рабочем столе.", "The shortcut is on the desktop now.");
+        }
+
+        // кнопка в настройках
+        void ShortcutButton()
+        {
+            if (HasShortcut()) { status.Text = App.T("Ярлык уже есть на рабочем столе.", "The desktop shortcut is already there."); return; }
+            if (MakeShortcut()) status.Text = App.T("Ярлык создан на рабочем столе.", "The shortcut is on the desktop now.");
+        }
+
         void OfferDotNet()
         {
             string wk = App.Str(cfg, "wolvenkit");

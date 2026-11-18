@@ -2034,6 +2034,26 @@ def header_draw(self, context):
     lay.operator('refit.export_menu', text=tr('ЭКСПОРТ', 'EXPORT'), icon='EXPORT', depress=True)
 
 
+def install_keys():
+    """Ctrl+S сохраняет работу (как кнопка «Сохранить работу»), а не служебный файл программы studio.blend."""
+    wm = bpy.context.window_manager
+    kc = wm.keyconfigs.addon
+    if kc:
+        km = kc.keymaps.new(name='Window', space_type='EMPTY')
+        if not any(k.idname == 'refit.save' for k in km.keymap_items):
+            km.keymap_items.new('refit.save', 'S', 'PRESS', ctrl=True)
+    try:   # без вопроса «Сохранить изменения?» при закрытии: он перезаписал бы studio.blend
+        bpy.context.preferences.view.use_save_prompt = False
+    except Exception:
+        pass
+    user = wm.keyconfigs.user   # настройки Blender тут не сохраняются (apply_theme), так что только на этот раз
+    km = user.keymaps.get('Window') if user else None
+    if km:
+        for k in km.keymap_items:
+            if k.idname == 'wm.save_mainfile' and k.type == 'S' and k.ctrl:
+                k.active = False
+
+
 def install_header():
     if _ui['header'] is None:
         _ui['header'] = bpy.types.VIEW3D_HT_header.draw
@@ -2463,7 +2483,7 @@ def start():
     if not bpy.app.background:
         # focus_view здесь не вызываем: переключение экрана из таймера иногда роняет Blender.
         # Режим «только 3D-вид» сохранён в самом studio.blend (tests/make_studio_blend.py).
-        for step in (apply_theme, install_header):
+        for step in (apply_theme, install_header, install_keys):
             try:
                 step()
             except Exception:
